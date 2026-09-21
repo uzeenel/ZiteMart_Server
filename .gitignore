@@ -1,0 +1,37 @@
+# Dependencies
+node_modules/
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+
+# Licensing — private key must NEVER be committed
+*.pem
+license.key
+license_private.pem
+license_public.pem
+
+# Uploads (user content, not code)
+uploads/
+temp/
+logs/
+*.log
+
+# Backups
+backups/
+*.sql
+*.dump
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Stray files
+server.js.backup
+server.js.backup2
+*.broken
