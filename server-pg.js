@@ -1179,7 +1179,11 @@ app.patch('/api/users/:id/toggle', authenticateToken, async (req, res) => {
         if (user.length === 0) return res.status(404).json({ error: 'User not found' });
         const newStatus = user[0].is_active ? 0 : 1;
         await pool.query('UPDATE users SET is_active = ? WHERE id = ?', [newStatus, req.params.id]);
-        res.json({ message: 'User status updated' });
+        const [updated] = await pool.query(
+            'SELECT id, username, full_name, role, is_active, last_login, created_at FROM users WHERE id = ?',
+            [req.params.id]
+        );
+        res.json(updated[0]);
     } catch (error) {
         console.error('Error toggling user:', error);
         res.status(500).json({ error: 'Server error' });
@@ -3877,7 +3881,7 @@ app.get('/api/my-permissions', authenticateToken, async (req, res) => {
 
 // ==================== START SERVER ====================
 
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Server running on http://localhost:${PORT}`);
     console.log(`   Test API: http://localhost:${PORT}/api/test (needs token)`);
     console.log(`   Login: http://localhost:${PORT}/api/login`);
