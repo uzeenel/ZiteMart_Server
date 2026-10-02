@@ -2246,7 +2246,6 @@ app.get('/api/vendors', authenticateToken, async (req, res) => {
             SELECT v.*, s.name as state_name 
             FROM vendors v
             LEFT JOIN states s ON v.state_id = s.id
-            WHERE v.is_active = 1 
             ORDER BY v.name
         `);
         res.json(vendors);
