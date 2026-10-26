@@ -5,7 +5,11 @@ const path = require('path');
 const fs = require('fs');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
-require('dotenv').config({ path: '.env.pg', override: true });
+if (require('fs').existsSync('.env.pg')) {
+    require('dotenv').config({ path: '.env.pg', override: true });
+} else {
+    require('dotenv').config();
+}
 // Set timezone to West Africa Time (UTC+1)
 process.env.TZ = 'Africa/Lagos';
 
