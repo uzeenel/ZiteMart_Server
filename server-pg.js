@@ -1091,6 +1091,34 @@ app.get('/api/discount-pins', authenticateToken, async (req, res) => {
 
 // ==================== USERS ENDPOINTS ====================
 
+app.get('/api/users', authenticateToken, async (req, res) => {
+    try {
+        if (req.user.role !== 'admin') return res.status(403).json({ error: 'Access denied' });
+        const [users] = await pool.query('SELECT id, username, full_name, role, is_active, last_login, created_at FROM users ORDER BY created_at DESC');
+        res.json(users);
+    } catch (error) {
+        console.error('Error fetching users:', error);
+        res.status(500).json({ error: 'Server error' });
+    }
+});
+
+app.get('/api/users/:id', authenticateToken, async (req, res) => {
+    try {
+        if (req.user.role !== 'admin' && req.user.id !== parseInt(req.params.id)) {
+            return res.status(403).json({ error: 'Access denied' });
+        }
+        
+        const [users] = await pool.query('SELECT id, username, full_name, role, is_active, last_login, created_at FROM users WHERE id = ?', [req.params.id]);
+        if (users.length === 0) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+        res.json(users[0]);
+    } catch (error) {
+        console.error('Error fetching user:', error);
+        res.status(500).json({ error: 'Server error' });
+    }
+});
+
 app.post("/api/users", authenticateToken, async (req, res) => {
   try {
     if (req.user.role !== "admin")
@@ -1120,39 +1148,6 @@ app.post("/api/users", authenticateToken, async (req, res) => {
     console.error("Error creating user:", error);
     res.status(500).json({ error: "Server error" });
   }
-});
-
-app.get('/api/users/:id', authenticateToken, async (req, res) => {
-    try {
-        if (req.user.role !== 'admin' && req.user.id !== parseInt(req.params.id)) {
-            return res.status(403).json({ error: 'Access denied' });
-        }
-        
-        const [users] = await pool.query('SELECT id, username, full_name, role, is_active, last_login, created_at FROM users WHERE id = ?', [req.params.id]);
-        if (users.length === 0) {
-            return res.status(404).json({ error: 'User not found' });
-        }
-        res.json(users[0]);
-    } catch (error) {
-        console.error('Error fetching user:', error);
-        res.status(500).json({ error: 'Server error' });
-    }
-});
-
-app.post('/api/users', authenticateToken, async (req, res) => {
-    try {
-        if (req.user.role !== 'admin') return res.status(403).json({ error: 'Access denied' });
-        const { username, password, fullName, role } = req.body;
-        const [existing] = await pool.query('SELECT id FROM users WHERE username = ?', [username]);
-        if (existing.length > 0) return res.status(400).json({ error: 'Username already exists' });
-        
-        const hashedPassword = await bcrypt.hash(password, 10);
-        const [result] = await pool.query('INSERT INTO users (username, password, full_name, role) VALUES (?, ?, ?, ?) RETURNING id', [username, hashedPassword, fullName, role]);
-        res.json({ id: result[0].id, message: 'User created successfully' });
-    } catch (error) {
-        console.error('Error creating user:', error);
-        res.status(500).json({ error: 'Server error' });
-    }
 });
 
 app.put('/api/users/:id', authenticateToken, async (req, res) => {
