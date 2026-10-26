@@ -25,15 +25,15 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Database connection
 const _pgPool = new Pool({
-  host: "ep-plain-bar-b2yxkbf7.c-6.eu-central-1.aws.neon.tech",
-  user: "neondb_owner",
-  password: "npg_hHEvDUJ0Twt6",
-  database: "neondb",
-  port: 5432,
-  ssl: { rejectUnauthorized: false },
-  max: 10,
-  idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 10000,
+    host: process.env.DB_HOST || 'localhost',
+    user: process.env.DB_USER || 'postgres',
+    password: process.env.DB_PASSWORD || '',
+    database: process.env.DB_NAME || 'pos_system',
+    port: process.env.DB_PORT ? parseInt(process.env.DB_PORT) : 5432,
+    ssl: { rejectUnauthorized: false },
+    max: 10,
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 10000,
 });
 
 function _toPg(sql) {
