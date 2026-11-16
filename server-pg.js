@@ -2498,277 +2498,288 @@ app.get(
 // ==================== CREDIT SALES ENDPOINTS ====================
 
 // Get credit sales
-app.get('/api/credit-sales', authenticateToken, async (req, res) => {
+app.get(
+  "/api/credit-sales",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const { status } = req.query;
-        let query = `
+      const { status } = req.query;
+      let query = `
             SELECT cs.*, c.name as customer_name, u.full_name as approved_by_name
             FROM credit_sales cs
             JOIN customers c ON cs.customer_id = c.id
             LEFT JOIN users u ON cs.approved_by = u.id
         `;
-        let params = [];
-        
-        if (status) {
-            query += ' WHERE cs.status = ?';
-            params.push(status);
-        }
-        
-        query += ' ORDER BY cs.created_at DESC';
-        
-        const [creditSales] = await pool.query(query, params);
-        res.json(creditSales);
+      let params = [];
+
+      if (status) {
+        query += " WHERE cs.status = ?";
+        params.push(status);
+      }
+
+      query += " ORDER BY cs.created_at DESC";
+
+      const [creditSales] = await req.db.query(query, params);
+      res.json(creditSales);
     } catch (error) {
-        console.error('Error fetching credit sales:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error fetching credit sales:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
 // Create credit sale
-app.post('/api/credit-sales', authenticateToken, async (req, res) => {
-    const connection = await pool.connect();
+app.post(
+  "/api/credit-sales",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        await connection.beginTransaction();
-        
-        const { sale_id, customer_id, invoice_number, total, due_date, notes, items } = req.body;
-        
-        console.log('=== CREATING CREDIT SALE ===');
-        console.log('Sale ID:', sale_id);
-        console.log('Customer ID:', customer_id);
-        console.log('Invoice:', invoice_number);
-        console.log('Total:', total);
-        console.log('Due Date:', due_date);
-        console.log('Items:', items);
-        
-        // Insert credit sale record with items as JSON
-        const [result] = await connection.query(
-            `INSERT INTO credit_sales 
-             (sale_id, customer_id, invoice_number, sale_date, total, due_date, status, notes, items) 
-             VALUES (?, ?, ?, NOW(), ?, ?, 'pending', ?, ?) RETURNING id`,
-            [sale_id, customer_id, invoice_number, total, due_date, notes, JSON.stringify(items)]
-        );
-        
-        console.log('Credit sale created, ID:', result[0].id);
-        
-        // Update customer balance
-        await connection.query(
-            'UPDATE customers SET current_balance = current_balance + ? WHERE id = ?',
-            [total, customer_id]
-        );
-        
-        await connection.commit();
-        res.json({ id: result[0].id, message: 'Credit sale created successfully' });
+      const {
+        sale_id,
+        customer_id,
+        invoice_number,
+        total,
+        due_date,
+        notes,
+        items,
+      } = req.body;
+
+      console.log("=== CREATING CREDIT SALE ===");
+      console.log("Sale ID:", sale_id);
+      console.log("Customer ID:", customer_id);
+      console.log("Invoice:", invoice_number);
+      console.log("Total:", total);
+      console.log("Due Date:", due_date);
+
+      const [result] = await req.db.query(
+        `INSERT INTO credit_sales 
+             (sale_id, customer_id, invoice_number, sale_date, total, due_date, status, notes, items, tenant_id) 
+             VALUES (?, ?, ?, NOW(), ?, ?, 'pending', ?, ?, ?) RETURNING id`,
+        [
+          sale_id,
+          customer_id,
+          invoice_number,
+          total,
+          due_date,
+          notes,
+          JSON.stringify(items),
+          req.user.tenant_id,
+        ],
+      );
+
+      console.log("Credit sale created, ID:", result[0].id);
+
+      await req.db.query(
+        "UPDATE customers SET current_balance = current_balance + ? WHERE id = ?",
+        [total, customer_id],
+      );
+
+      res.json({
+        id: result[0].id,
+        message: "Credit sale created successfully",
+      });
     } catch (error) {
-        await connection.rollback();
-        console.error('Error creating credit sale:', error);
-        res.status(500).json({ error: error.message });
-    } finally {
-        connection.release();
+      console.error("Error creating credit sale:", error);
+      res.status(500).json({ error: error.message });
     }
-});
+  },
+);
 
 // Approve credit sale
-app.patch('/api/credit-sales/:id/approve', authenticateToken, async (req, res) => {
-    const connection = await pool.connect();
+app.patch(
+  "/api/credit-sales/:id/approve",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        await connection.beginTransaction();
-        
-        console.log('=== APPROVE CREDIT SALE ===');
-        
-        // Get credit sale details
-        const [creditSale] = await connection.query(
-            'SELECT * FROM credit_sales WHERE id = ?',
-            [req.params.id]
-        );
-        
-        if (creditSale.length === 0) {
-            return res.status(404).json({ error: 'Credit sale not found' });
-        }
-        
-        console.log('Raw items from DB:', creditSale[0].items);
-        console.log('Type of items:', typeof creditSale[0].items);
-        
-        // Get the sale to find the cashier
-        const [sale] = await connection.query(
-            'SELECT cashier_id, invoice_number FROM sales WHERE id = ?',
-            [creditSale[0].sale_id]
-        );
-        
-        // Update credit sale status (skip items parsing for now)
-        await connection.query(
-            `UPDATE credit_sales 
+      console.log("=== APPROVE CREDIT SALE ===");
+
+      const [creditSale] = await req.db.query(
+        "SELECT * FROM credit_sales WHERE id = ?",
+        [req.params.id],
+      );
+
+      if (creditSale.length === 0) {
+        return res.status(404).json({ error: "Credit sale not found" });
+      }
+
+      const [sale] = await req.db.query(
+        "SELECT cashier_id, invoice_number FROM sales WHERE id = ?",
+        [creditSale[0].sale_id],
+      );
+
+      await req.db.query(
+        `UPDATE credit_sales 
              SET status = 'approved', approved_by = ?, approved_at = NOW() 
              WHERE id = ?`,
-            [req.user.id, req.params.id]
-        );
-        
-        // Create notification for cashier
-        await connection.query(
-            `INSERT INTO notifications (user_id, title, message, type, reference_id) 
-             VALUES (?, 'Credit Sale Approved', ?, 'credit_approved', ?)`,
-            [sale[0].cashier_id, `Credit sale ${creditSale[0].invoice_number} has been approved.`, creditSale[0].sale_id]
-        );
-        
-        await connection.commit();
-        res.json({ message: 'Credit sale approved. Cashier notified.' });
-        
+        [req.user.id, req.params.id],
+      );
+
+      await req.db.query(
+        `INSERT INTO notifications (user_id, title, message, type, reference_id, tenant_id) 
+             VALUES (?, 'Credit Sale Approved', ?, 'credit_approved', ?, ?)`,
+        [
+          sale[0].cashier_id,
+          `Credit sale ${creditSale[0].invoice_number} has been approved.`,
+          creditSale[0].sale_id,
+          req.user.tenant_id,
+        ],
+      );
+
+      res.json({ message: "Credit sale approved. Cashier notified." });
     } catch (error) {
-        await connection.rollback();
-        console.error('Error approving credit sale:', error);
-        res.status(500).json({ error: error.message });
-    } finally {
-        connection.release();
+      console.error("Error approving credit sale:", error);
+      res.status(500).json({ error: error.message });
     }
-});
+  },
+);
 
 // Reject credit sale
-app.patch('/api/credit-sales/:id/reject', authenticateToken, async (req, res) => {
-    const connection = await pool.connect();
+app.patch(
+  "/api/credit-sales/:id/reject",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        await connection.beginTransaction();
-        
-        const { reason } = req.body;
-        
-        // Check if user is admin or manager
-        if (req.user.role !== 'admin' && req.user.role !== 'manager') {
-            return res.status(403).json({ error: 'Only managers and admins can reject credit sales' });
-        }
-        
-        // Get credit sale details
-        const [creditSale] = await connection.query(
-            'SELECT * FROM credit_sales WHERE id = ?',
-            [req.params.id]
-        );
-        
-        if (creditSale.length === 0) {
-            return res.status(404).json({ error: 'Credit sale not found' });
-        }
-        
-        // Get the sale to find the cashier
-        const [sale] = await connection.query(
-            'SELECT cashier_id, invoice_number FROM sales WHERE id = ?',
-            [creditSale[0].sale_id]
-        );
-        
-        // Reverse customer balance
-        await connection.query(
-            'UPDATE customers SET current_balance = current_balance - ? WHERE id = ?',
-            [creditSale[0].total, creditSale[0].customer_id]
-        );
-        
-        // Update credit sale status
-        await connection.query(
-            `UPDATE credit_sales 
+      const { reason } = req.body;
+
+      if (req.user.role !== "admin" && req.user.role !== "manager") {
+        return res
+          .status(403)
+          .json({ error: "Only managers and admins can reject credit sales" });
+      }
+
+      const [creditSale] = await req.db.query(
+        "SELECT * FROM credit_sales WHERE id = ?",
+        [req.params.id],
+      );
+
+      if (creditSale.length === 0) {
+        return res.status(404).json({ error: "Credit sale not found" });
+      }
+
+      const [sale] = await req.db.query(
+        "SELECT cashier_id, invoice_number FROM sales WHERE id = ?",
+        [creditSale[0].sale_id],
+      );
+
+      await req.db.query(
+        "UPDATE customers SET current_balance = current_balance - ? WHERE id = ?",
+        [creditSale[0].total, creditSale[0].customer_id],
+      );
+
+      await req.db.query(
+        `UPDATE credit_sales 
              SET status = 'rejected', rejection_reason = ?, approved_by = ?, approved_at = NOW() 
              WHERE id = ?`,
-            [reason, req.user.id, req.params.id]
-        );
-        
-        // Create notification for cashier
-        await connection.query(
-            `INSERT INTO notifications (user_id, title, message, type, reference_id) 
-             VALUES (?, 'Credit Sale Rejected', ?, 'credit_rejected', ?)`,
-            [sale[0].cashier_id, `Credit sale ${creditSale[0].invoice_number} has been rejected. Reason: ${reason}. Return products to shelf.`, creditSale[0].sale_id]
-        );
-        
-        await connection.commit();
-        res.json({ message: 'Credit sale rejected. Cashier notified.' });
+        [reason, req.user.id, req.params.id],
+      );
+
+      await req.db.query(
+        `INSERT INTO notifications (user_id, title, message, type, reference_id, tenant_id) 
+             VALUES (?, 'Credit Sale Rejected', ?, 'credit_rejected', ?, ?)`,
+        [
+          sale[0].cashier_id,
+          `Credit sale ${creditSale[0].invoice_number} has been rejected. Reason: ${reason}. Return products to shelf.`,
+          creditSale[0].sale_id,
+          req.user.tenant_id,
+        ],
+      );
+
+      res.json({ message: "Credit sale rejected. Cashier notified." });
     } catch (error) {
-        await connection.rollback();
-        console.error('Error rejecting credit sale:', error);
-        res.status(500).json({ error: 'Server error' });
-    } finally {
-        connection.release();
+      console.error("Error rejecting credit sale:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
 // Complete credit sale (cashier releases products)
-app.patch('/api/credit-sales/:id/complete', authenticateToken, async (req, res) => {
-    const connection = await pool.connect();
+app.patch(
+  "/api/credit-sales/:id/complete",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        await connection.beginTransaction();
-        
-        // Get credit sale details
-        const [creditSale] = await connection.query(
-            'SELECT * FROM credit_sales WHERE (id = ? OR sale_id = ?) AND status = ?',
-            [req.params.id, req.params.id, 'approved']
+      const [creditSale] = await req.db.query(
+        "SELECT * FROM credit_sales WHERE (id = ? OR sale_id = ?) AND status = ?",
+        [req.params.id, req.params.id, "approved"],
+      );
+
+      if (creditSale.length === 0) {
+        return res
+          .status(404)
+          .json({ error: "Credit sale not found or not approved" });
+      }
+
+      const items =
+        typeof creditSale[0].items === "string"
+          ? JSON.parse(creditSale[0].items)
+          : creditSale[0].items;
+
+      for (const item of items) {
+        const [currentStock] = await req.db.query(
+          "SELECT stock_quantity FROM products WHERE id = ?",
+          [item.product_id],
         );
-        
-        if (creditSale.length === 0) {
-            return res.status(404).json({ error: 'Credit sale not found or not approved' });
-        }
-        
-        // const items = creditSale[0].items;
-        const items = typeof creditSale[0].items === 'string' ? JSON.parse(creditSale[0].items) : creditSale[0].items;
-        
-        // Deduct stock for each item
-        for (const item of items) {
-            // Get current stock
-            const [currentStock] = await connection.query(
-                'SELECT stock_quantity FROM products WHERE id = ?',
-                [item.product_id]
-            );
-            const balanceBefore = currentStock[0]?.stock_quantity || 0;
-            const balanceAfter = balanceBefore - item.quantity;
-            
-            // Deduct from actual stock
-            await connection.query(
-                'UPDATE products SET stock_quantity = stock_quantity - ? WHERE id = ?',
-                [item.quantity, item.product_id]
-            );
-            
-            // Get product details
-            const [product] = await connection.query(
-                'SELECT name, sku, unit_id FROM products WHERE id = ?',
-                [item.product_id]
-            );
-            
-            // Record stock movement
-            await connection.query(
-                `INSERT INTO stock_movements 
+        const balanceBefore = currentStock[0]?.stock_quantity || 0;
+        const balanceAfter = balanceBefore - item.quantity;
+
+        await req.db.query(
+          "UPDATE products SET stock_quantity = stock_quantity - ? WHERE id = ?",
+          [item.quantity, item.product_id],
+        );
+
+        const [product] = await req.db.query(
+          "SELECT name, sku, unit_id FROM products WHERE id = ?",
+          [item.product_id],
+        );
+
+        await req.db.query(
+          `INSERT INTO stock_movements 
                  (product_id, product_name, sku, date, reference, movement_type, 
-                  quantity, balance_before, balance_after, notes, user_id, invoice_number)
-                 VALUES (?, ?, ?, NOW(), ?, 'OUT', ?, ?, ?, ?, ?, ?)`,
-                [
-                    item.product_id,
-                    product[0]?.name || '',
-                    product[0]?.sku || '',
-                    `CREDIT-${creditSale[0].invoice_number}`,
-                    item.quantity,
-                    balanceBefore,
-                    balanceAfter,
-                    `Credit sale completed #${creditSale[0].invoice_number}`,
-                    req.user.id,
-                    creditSale[0].invoice_number
-                ]
-            );
-        }
-        
-        // Update credit sale status to completed
-        await connection.query(
-            `UPDATE credit_sales 
+                  quantity, balance_before, balance_after, notes, user_id, invoice_number, tenant_id)
+                 VALUES (?, ?, ?, NOW(), ?, 'OUT', ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            item.product_id,
+            product[0]?.name || "",
+            product[0]?.sku || "",
+            `CREDIT-${creditSale[0].invoice_number}`,
+            item.quantity,
+            balanceBefore,
+            balanceAfter,
+            `Credit sale completed #${creditSale[0].invoice_number}`,
+            req.user.id,
+            creditSale[0].invoice_number,
+            req.user.tenant_id,
+          ],
+        );
+      }
+
+      await req.db.query(
+        `UPDATE credit_sales 
              SET status = 'paid' 
              WHERE id = ?`,
-            [req.params.id]
-        );
-        
-        // Mark notification as read
-        await connection.query(
-            `UPDATE notifications SET is_read = TRUE 
+        [req.params.id],
+      );
+
+      await req.db.query(
+        `UPDATE notifications SET is_read = TRUE 
              WHERE reference_id = ? AND type IN ('credit_approved', 'credit_rejected')`,
-            [creditSale[0].sale_id]
-        );
-        
-        await connection.commit();
-        res.json({ message: 'Credit sale completed. Stock deducted.' });
+        [creditSale[0].sale_id],
+      );
+
+      res.json({ message: "Credit sale completed. Stock deducted." });
     } catch (error) {
-        await connection.rollback();
-        console.error('Error completing credit sale:', error);
-        res.status(500).json({ error: 'Server error' });
-    } finally {
-        connection.release();
+      console.error("Error completing credit sale:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
+
+
 // ==================== CUSTOMERS ENDPOINTS ====================
 
 app.get('/api/customers', authenticateToken, async (req, res) => {
