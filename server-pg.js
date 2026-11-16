@@ -2882,92 +2882,169 @@ app.get('/api/customers/:id/balance', authenticateToken, async (req, res) => {
 
 // ==================== VENDORS ENDPOINTS ====================
 
-app.get('/api/vendors', authenticateToken, async (req, res) => {
+app.get(
+  "/api/vendors",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const [vendors] = await pool.query(`
+      const [vendors] = await req.db.query(`
             SELECT v.*, s.name as state_name 
             FROM vendors v
             LEFT JOIN states s ON v.state_id = s.id
             ORDER BY v.name
         `);
-        res.json(vendors);
+      res.json(vendors);
     } catch (error) {
-        console.error('Error fetching vendors:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error fetching vendors:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
-app.get('/api/vendors/:id', authenticateToken, async (req, res) => {
+app.get(
+  "/api/vendors/:id",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const [vendors] = await pool.query(`
+      const [vendors] = await req.db.query(
+        `
             SELECT v.*, s.name as state_name 
             FROM vendors v
             LEFT JOIN states s ON v.state_id = s.id
             WHERE v.id = ?
-        `, [req.params.id]);
-        
-        if (vendors.length === 0) {
-            return res.status(404).json({ error: 'Vendor not found' });
-        }
-        res.json(vendors[0]);
-    } catch (error) {
-        console.error('Error fetching vendor:', error);
-        res.status(500).json({ error: 'Server error' });
-    }
-});
+        `,
+        [req.params.id],
+      );
 
-app.post('/api/vendors', authenticateToken, async (req, res) => {
+      if (vendors.length === 0) {
+        return res.status(404).json({ error: "Vendor not found" });
+      }
+      res.json(vendors[0]);
+    } catch (error) {
+      console.error("Error fetching vendor:", error);
+      res.status(500).json({ error: "Server error" });
+    }
+  },
+);
+
+app.post(
+  "/api/vendors",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const { name, contactPerson, phone, email, address, stateId, taxId, paymentTerms, isVatRegistered } = req.body;
-        
-        const [result] = await pool.query(
-            `INSERT INTO vendors (name, contact_person, phone, email, address, state_id, tax_id, payment_terms, is_vat_registered, is_active, created_at, updated_at) 
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NOW(), NOW()) RETURNING id`,
-            [name, contactPerson, phone, email, address, stateId, taxId, paymentTerms, isVatRegistered ? 1 : 0]
-        );
-        
-        const [newVendor] = await pool.query(`
+      const {
+        name,
+        contactPerson,
+        phone,
+        email,
+        address,
+        stateId,
+        taxId,
+        paymentTerms,
+        isVatRegistered,
+      } = req.body;
+
+      const [result] = await req.db.query(
+        `INSERT INTO vendors (name, contact_person, phone, email, address, state_id, tax_id, payment_terms, is_vat_registered, is_active, created_at, updated_at, tenant_id) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NOW(), NOW(), ?) RETURNING id`,
+        [
+          name,
+          contactPerson,
+          phone,
+          email,
+          address,
+          stateId,
+          taxId,
+          paymentTerms,
+          isVatRegistered ? 1 : 0,
+          req.user.tenant_id,
+        ],
+      );
+
+      const [newVendor] = await req.db.query(
+        `
             SELECT v.*, s.name as state_name 
             FROM vendors v
             LEFT JOIN states s ON v.state_id = s.id
             WHERE v.id = ?
-        `, [result[0].id]);
-        
-        res.json(newVendor[0]);
-    } catch (error) {
-        console.error('Error adding vendor:', error);
-        res.status(500).json({ error: 'Server error' });
-    }
-});
+        `,
+        [result[0].id],
+      );
 
-app.put('/api/vendors/:id', authenticateToken, async (req, res) => {
+      res.json(newVendor[0]);
+    } catch (error) {
+      console.error("Error adding vendor:", error);
+      res.status(500).json({ error: "Server error" });
+    }
+  },
+);
+
+app.put(
+  "/api/vendors/:id",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const { name, contactPerson, phone, email, address, stateId, taxId, paymentTerms, isVatRegistered, isActive } = req.body;
-        
-        await pool.query(
-            `UPDATE vendors SET 
+      const {
+        name,
+        contactPerson,
+        phone,
+        email,
+        address,
+        stateId,
+        taxId,
+        paymentTerms,
+        isVatRegistered,
+        isActive,
+      } = req.body;
+
+      await req.db.query(
+        `UPDATE vendors SET 
                 name = ?, contact_person = ?, phone = ?, email = ?, address = ?, state_id = ?,
                 tax_id = ?, payment_terms = ?, is_vat_registered = ?, is_active = ?, updated_at = NOW()
              WHERE id = ?`,
-            [name, contactPerson, phone, email, address, stateId, taxId, paymentTerms, isVatRegistered ? 1 : 0, isActive !== undefined ? (isActive ? 1 : 0) : 1, req.params.id]
-        );
-        
-        res.json({ message: 'Vendor updated successfully' });
-    } catch (error) {
-        console.error('Error updating vendor:', error);
-        res.status(500).json({ error: 'Server error' });
-    }
-});
+        [
+          name,
+          contactPerson,
+          phone,
+          email,
+          address,
+          stateId,
+          taxId,
+          paymentTerms,
+          isVatRegistered ? 1 : 0,
+          isActive !== undefined ? (isActive ? 1 : 0) : 1,
+          req.params.id,
+        ],
+      );
 
-app.delete('/api/vendors/:id', authenticateToken, async (req, res) => {
-    try {
-        await pool.query('UPDATE vendors SET is_active = 0 WHERE id = ?', [req.params.id]);
-        res.json({ message: 'Vendor deleted successfully' });
+      res.json({ message: "Vendor updated successfully" });
     } catch (error) {
-        console.error('Error deleting vendor:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error updating vendor:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
+
+app.delete(
+  "/api/vendors/:id",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
+    try {
+      await req.db.query("UPDATE vendors SET is_active = 0 WHERE id = ?", [
+        req.params.id,
+      ]);
+      res.json({ message: "Vendor deleted successfully" });
+    } catch (error) {
+      console.error("Error deleting vendor:", error);
+      res.status(500).json({ error: "Server error" });
+    }
+  },
+);
 
 // ==================== UNITS ENDPOINTS ====================
 
