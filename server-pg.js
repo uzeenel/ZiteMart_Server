@@ -1422,76 +1422,109 @@ app.post(
   },
 );
 
-app.put('/api/users/:id', authenticateToken, async (req, res) => {
+app.put(
+  "/api/users/:id",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        if (req.user.role !== 'admin') {
-            return res.status(403).json({ error: 'Access denied' });
-        }
-        
-        const { fullName, role, isActive } = req.body;
-        
-        await pool.query(
-            'UPDATE users SET full_name = ?, role = ?, is_active = ?, updated_at = NOW() WHERE id = ?',
-            [fullName, role, isActive, req.params.id]
-        );
-        
-        res.json({ message: 'User updated successfully' });
-    } catch (error) {
-        console.error('Error updating user:', error);
-        res.status(500).json({ error: 'Server error' });
-    }
-});
+      if (req.user.role !== "admin") {
+        return res.status(403).json({ error: "Access denied" });
+      }
 
-app.patch('/api/users/:id/password', authenticateToken, async (req, res) => {
-    try {
-        if (req.user.role !== 'admin' && req.user.id !== parseInt(req.params.id)) {
-            return res.status(403).json({ error: 'Access denied' });
-        }
-        
-        const { password } = req.body;
-        const hashedPassword = await bcrypt.hash(password, 10);
-        
-        await pool.query(
-            'UPDATE users SET password = ?, updated_at = NOW() WHERE id = ?',
-            [hashedPassword, req.params.id]
-        );
-        
-        res.json({ message: 'Password updated successfully' });
-    } catch (error) {
-        console.error('Error updating password:', error);
-        res.status(500).json({ error: 'Server error' });
-    }
-});
+      const { fullName, role, isActive } = req.body;
 
-app.patch('/api/users/:id/toggle', authenticateToken, async (req, res) => {
-    try {
-        if (req.user.role !== 'admin') return res.status(403).json({ error: 'Access denied' });
-        const [user] = await pool.query('SELECT is_active FROM users WHERE id = ?', [req.params.id]);
-        if (user.length === 0) return res.status(404).json({ error: 'User not found' });
-        const newStatus = user[0].is_active ? 0 : 1;
-        await pool.query('UPDATE users SET is_active = ? WHERE id = ?', [newStatus, req.params.id]);
-        const [updated] = await pool.query(
-            'SELECT id, username, full_name, role, is_active, last_login, created_at FROM users WHERE id = ?',
-            [req.params.id]
-        );
-        res.json(updated[0]);
-    } catch (error) {
-        console.error('Error toggling user:', error);
-        res.status(500).json({ error: 'Server error' });
-    }
-});
+      await req.db.query(
+        "UPDATE users SET full_name = ?, role = ?, is_active = ?, updated_at = NOW() WHERE id = ?",
+        [fullName, role, isActive, req.params.id],
+      );
 
-app.delete('/api/users/:id', authenticateToken, async (req, res) => {
-    try {
-        if (req.user.role !== 'admin') return res.status(403).json({ error: 'Access denied' });
-        if (parseInt(req.params.id) === req.user.id) return res.status(400).json({ error: 'Cannot delete yourself' });
-        await pool.query('DELETE FROM users WHERE id = ?', [req.params.id]);
-        res.json({ message: 'User deleted successfully' });
+      res.json({ message: "User updated successfully" });
     } catch (error) {
-        console.error('Error deleting user:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error updating user:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
+
+app.patch(
+  "/api/users/:id/password",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
+    try {
+      if (
+        req.user.role !== "admin" &&
+        req.user.id !== parseInt(req.params.id)
+      ) {
+        return res.status(403).json({ error: "Access denied" });
+      }
+
+      const { password } = req.body;
+      const hashedPassword = await bcrypt.hash(password, 10);
+
+      await req.db.query(
+        "UPDATE users SET password = ?, updated_at = NOW() WHERE id = ?",
+        [hashedPassword, req.params.id],
+      );
+
+      res.json({ message: "Password updated successfully" });
+    } catch (error) {
+      console.error("Error updating password:", error);
+      res.status(500).json({ error: "Server error" });
+    }
+  },
+);
+
+app.patch(
+  "/api/users/:id/toggle",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
+    try {
+      if (req.user.role !== "admin")
+        return res.status(403).json({ error: "Accessdenied" });
+      const [user] = await req.db.query(
+        "SELECT is_active FROM users WHERE id = ?",
+        [req.params.id],
+      );
+      if (user.length === 0)
+        return res.status(404).json({ error: "User not found" });
+      const newStatus = user[0].is_active ? 0 : 1;
+      await req.db.query("UPDATE users SET is_active = ? WHERE id = ?", [
+        newStatus,
+        req.params.id,
+      ]);
+      const [updated] = await req.db.query(
+        "SELECT id, username, full_name, role, is_active, last_login, created_at FROM users WHERE id = ?",
+        [req.params.id],
+      );
+      res.json(updated[0]);
+    } catch (error) {
+      console.error("Error toggling user:", error);
+      res.status(500).json({ error: "Server error" });
+    }
+  },
+);
+
+app.delete(
+  "/api/users/:id",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
+    try {
+      if (req.user.role !== "admin")
+        return res.status(403).json({ error: "Accessdenied" });
+      if (parseInt(req.params.id) === req.user.id)
+        return res.status(400).json({ error: "Cannot delete yourself" });
+      await req.db.query("DELETE FROM users WHERE id = ?", [req.params.id]);
+      res.json({ message: "User deleted successfully" });
+    } catch (error) {
+      console.error("Error deleting user:", error);
+      res.status(500).json({ error: "Server error" });
+    }
+  },
+);
 
 // ==================== CASH BOOK ENDPOINTS ====================
 
