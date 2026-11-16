@@ -2041,104 +2041,146 @@ app.put(
 
 // ==================== EXPENSES ENDPOINTS ====================
 
-app.get('/api/expenses', authenticateToken, async (req, res) => {
+app.get(
+  "/api/expenses",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const { start, end } = req.query;
-        let query = 'SELECT * FROM expenses';
-        let params = [];
-        if (start && end) {
-            query += ' WHERE date BETWEEN ? AND ?';
-            params = [start, end];
-        }
-        query += ' ORDER BY date DESC';
-        const [expenses] = await pool.query(query, params);
-        res.json(expenses);
+      const { start, end } = req.query;
+      let query = "SELECT * FROM expenses";
+      let params = [];
+      if (start && end) {
+        query += " WHERE date BETWEEN ? AND ?";
+        params = [start, end];
+      }
+      query += " ORDER BY date DESC";
+      const [expenses] = await req.db.query(query, params);
+      res.json(expenses);
     } catch (error) {
-        console.error('Error fetching expenses:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error fetching expenses:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
-app.post('/api/expenses', authenticateToken, async (req, res) => {
-    const connection = await pool.connect();
+app.post(
+  "/api/expenses",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        await connection.beginTransaction();
-        
-        const { date, amount, category, description, reference, notes, userId, vendor } = req.body;
-        const paymentMethod = req.body.paymentMethod || 'cash';
-        
-        console.log('=== ADDING EXPENSE ===');
-        console.log('paymentMethod:', paymentMethod);
-        console.log('amount:', amount);
-        console.log('category:', category);
-        console.log('🔴 paymentMethod value:', paymentMethod);
-        console.log('🔴 paymentMethod type:', typeof paymentMethod);
-        console.log('🔴 paymentMethod === cash?', paymentMethod === 'cash');
-        
-        const [result] = await connection.query(
-            `INSERT INTO expenses 
-             (date, amount, category, description, payment_method, reference, notes, user_id, vendor) 
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-            [date, amount, category, description, paymentMethod, reference, notes, userId, vendor]
+      const {
+        date,
+        amount,
+        category,
+        description,
+        reference,
+        notes,
+        userId,
+        vendor,
+      } = req.body;
+      const paymentMethod = req.body.paymentMethod || "cash";
+
+      console.log("=== ADDING EXPENSE ===");
+      console.log("paymentMethod:", paymentMethod);
+      console.log("amount:", amount);
+      console.log("category:", category);
+
+      const [result] = await req.db.query(
+        `INSERT INTO expenses 
+             (date, amount, category, description, payment_method, reference, notes, user_id, vendor, tenant_id) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+        [
+          date,
+          amount,
+          category,
+          description,
+          paymentMethod,
+          reference,
+          notes,
+          userId,
+          vendor,
+          req.user.tenant_id,
+        ],
+      );
+
+      // Record in cash book or bank book based on payment method
+      if (paymentMethod === "cash") {
+        await req.db.query(
+          `INSERT INTO cash_transactions 
+                (date, type, amount, category, description, reference, user_id, created_at, tenant_id) 
+                VALUES (?, 'cash_out', ?, ?, ?, ?, ?, NOW(), ?)`,
+          [
+            date,
+            amount,
+            category,
+            description,
+            reference,
+            userId,
+            req.user.tenant_id,
+          ],
         );
-        
-        // Record in cash book or bank book based on payment method
-        if (paymentMethod === 'cash') {
-           
-            await connection.query(
-                `INSERT INTO cash_transactions 
-                (date, type, amount, category, description, reference, user_id, created_at) 
-                VALUES (?, 'cash_out', ?, ?, ?, ?, ?, NOW())`,
-                [date, amount, category, description, reference, userId]
-            );
-            console.log('✅ Cash transaction recorded');
-        } else if (paymentMethod === 'card' || paymentMethod === 'transfer' || paymentMethod === 'bank') {
-            // Get the first active bank account
-            const [accounts] = await connection.query(
-                'SELECT id FROM bank_accounts WHERE is_active = 1 LIMIT 1'
-            );
-            const bankAccountId = accounts.length > 0 ? accounts[0].id : null;
-            
-            await connection.query(
-                `INSERT INTO bank_transactions 
-                 (date, type, amount, account_name, bank_name, description, reference, user_id, bank_account_id) 
-                 VALUES (?, 'withdrawal', ?, 'Expense Account', ?, ?, ?, ?, ?)`,
-                [date, amount, paymentMethod === 'card' ? 'Card Payment' : 'Bank Transfer', 
-                 description, reference, userId, bankAccountId]
-            );
-            
-            if (bankAccountId) {
-                await connection.query(
-                    'UPDATE bank_accounts SET current_balance = current_balance - ? WHERE id = ?',
-                    [amount, bankAccountId]
-                );
-                console.log(`✅ Bank account balance updated: -${amount}`);
-            }
-            console.log('✅ Bank transaction recorded');
+        console.log("✅ Cash transaction recorded");
+      } else if (
+        paymentMethod === "card" ||
+        paymentMethod === "transfer" ||
+        paymentMethod === "bank"
+      ) {
+        // Get the first active bank account
+        const [accounts] = await req.db.query(
+          "SELECT id FROM bank_accounts WHERE is_active = 1 LIMIT 1",
+        );
+        const bankAccountId = accounts.length > 0 ? accounts[0].id : null;
+
+        await req.db.query(
+          `INSERT INTO bank_transactions 
+                 (date, type, amount, account_name, bank_name, description, reference, user_id, bank_account_id, tenant_id) 
+                 VALUES (?, 'withdrawal', ?, 'Expense Account', ?, ?, ?, ?, ?, ?)`,
+          [
+            date,
+            amount,
+            paymentMethod === "card" ? "Card Payment" : "Bank Transfer",
+            description,
+            reference,
+            userId,
+            bankAccountId,
+            req.user.tenant_id,
+          ],
+        );
+
+        if (bankAccountId) {
+          await req.db.query(
+            "UPDATE bank_accounts SET current_balance = current_balance - ? WHERE id = ?",
+            [amount, bankAccountId],
+          );
+          console.log(`✅ Bank account balance updated: -${amount}`);
         }
-        
-        await connection.commit();
-        res.json({ id: result[0].id, message: 'Expense added successfully' });
-        
+        console.log("✅ Bank transaction recorded");
+      }
+
+      res.json({ id: result[0].id, message: "Expense added successfully" });
     } catch (error) {
-        await connection.rollback();
-        console.error('Error adding expense:', error);
-        res.status(500).json({ error: 'Server error' });
-    } finally {
-        connection.release();
+      console.error("Error adding expense:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
-
-app.delete('/api/expenses/:id', authenticateToken, async (req, res) => {
+app.delete(
+  "/api/expenses/:id",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        await pool.query('DELETE FROM expenses WHERE id = ?', [req.params.id]);
-        res.json({ message: 'Expense deleted successfully' });
+      await req.db.query("DELETE FROM expenses WHERE id = ?", [req.params.id]);
+      res.json({ message: "Expense deleted successfully" });
     } catch (error) {
-        console.error('Error deleting expense:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error deleting expense:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
 // ==================== SALES RETURNS ENDPOINTS ====================
 
