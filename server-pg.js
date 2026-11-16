@@ -4267,165 +4267,183 @@ app.get(
 );
 
 // Record layaway payment
-app.post('/api/layaway/:id/payment', authenticateToken, async (req, res) => {
-    const connection = await pool.connect();
+app.post(
+  "/api/layaway/:id/payment",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        await connection.beginTransaction();
-        
-        const { amount, payment_method } = req.body;
-        const layawayId = req.params.id;
-        const parsedAmount = parseFloat(amount);
-        const userId = req.user.id;
-        
-        console.log('=== RECORD LAYAWAY PAYMENT ===');
-        console.log('Layaway ID:', layawayId);
-        console.log('Amount:', parsedAmount);
-        console.log('Payment Method:', payment_method);
-        console.log('User ID:', userId);
-        
-        // Get current order
-        const [orders] = await connection.query(
-            'SELECT * FROM layaway_orders WHERE id = ? AND status IN (?, ?, ?)',
-            [layawayId, 'deposit_paid', 'partial', 'active']
-        );
-        
-        if (orders.length === 0) {
-            return res.status(404).json({ error: 'Layaway order not found or already completed' });
-        }
-        
-        const order = orders[0];
-        
-        // Record payment in layaway_payments
-        await connection.query(
-            `INSERT INTO layaway_payments 
-             (layaway_id, amount, payment_method, recorded_by) 
-             VALUES (?, ?, ?, ?)`,
-            [layawayId, parsedAmount, payment_method, userId]
-        );
-        
-        // Update order
-        const newPaidAmount = parseFloat(order.paid_amount) + parsedAmount;
-        const newBalance = parseFloat(order.total_amount) - newPaidAmount;
-        let newStatus = 'partial';
-        if (newBalance <= 0) {
-            newStatus = 'completed';
-        }
-        
-        await connection.query(
-            `UPDATE layaway_orders 
+      const { amount, payment_method } = req.body;
+      const layawayId = req.params.id;
+      const parsedAmount = parseFloat(amount);
+      const userId = req.user.id;
+
+      console.log("=== RECORD LAYAWAY PAYMENT ===");
+      console.log("Layaway ID:", layawayId);
+      console.log("Amount:", parsedAmount);
+      console.log("Payment Method:", payment_method);
+      console.log("User ID:", userId);
+
+      // Get current order
+      const [orders] = await req.db.query(
+        "SELECT * FROM layaway_orders WHERE id = ? AND status IN (?, ?, ?)",
+        [layawayId, "deposit_paid", "partial", "active"],
+      );
+
+      if (orders.length === 0) {
+        return res
+          .status(404)
+          .json({ error: "Layaway order not found or already completed" });
+      }
+
+      const order = orders[0];
+
+      // Record payment in layaway_payments
+      await req.db.query(
+        `INSERT INTO layaway_payments 
+             (layaway_id, amount, payment_method, recorded_by, tenant_id) 
+             VALUES (?, ?, ?, ?, ?)`,
+        [layawayId, parsedAmount, payment_method, userId, req.user.tenant_id],
+      );
+
+      // Update order
+      const newPaidAmount = parseFloat(order.paid_amount) + parsedAmount;
+      const newBalance = parseFloat(order.total_amount) - newPaidAmount;
+      let newStatus = "partial";
+      if (newBalance <= 0) {
+        newStatus = "completed";
+      }
+
+      await req.db.query(
+        `UPDATE layaway_orders 
              SET paid_amount = ?, balance = ?, status = ?, updated_at = NOW()
              WHERE id = ?`,
-            [newPaidAmount, newBalance, newStatus, layawayId]
+        [newPaidAmount, newBalance, newStatus, layawayId],
+      );
+
+      // ===== RECORD IN CASH/BANK BOOK =====
+      const dateStr = new Date().toISOString().slice(0, 19).replace("T", " ");
+      const description = `Layaway payment - ${order.invoice_number}`;
+      const reference = `LAY-${layawayId}`;
+
+      if (payment_method === "cash") {
+        // Record in cash_book as cash_in
+        await req.db.query(
+          `INSERT INTO cash_transactions 
+                 (date, type, amount, category, description, reference, user_id, tenant_id) 
+                 VALUES (?, 'cash_in', ?, 'Layaway Payment', ?, ?, ?, ?)`,
+          [
+            dateStr,
+            parsedAmount,
+            description,
+            reference,
+            userId,
+            req.user.tenant_id,
+          ],
         );
-        
-        // ===== RECORD IN CASH/BANK BOOK =====
-        const dateStr = new Date().toISOString().slice(0, 19).replace('T', ' ');
-        const description = `Layaway payment - ${order.invoice_number}`;
-        const reference = `LAY-${layawayId}`;
-        
-        if (payment_method === 'cash') {
-            // Record in cash_book as cash_in
-            await connection.query(
-                `INSERT INTO cash_transactions 
-                 (date, type, amount, category, description, reference, user_id) 
-                 VALUES (?, 'cash_in', ?, 'Layaway Payment', ?, ?, ?)`,
-                [dateStr, parsedAmount, description, reference, userId]
-            );
-            console.log('✅ Cash transaction recorded for layaway payment');
-        } else if (payment_method === 'card' || payment_method === 'transfer') {
-            // Get the first active bank account
-            const [accounts] = await connection.query(
-                'SELECT id FROM bank_accounts WHERE is_active = 1 LIMIT 1'
-            );
-            const bankAccountId = accounts.length > 0 ? accounts[0].id : null;
-            
-            // Record in bank_book
-            await connection.query(
-                `INSERT INTO bank_transactions 
-                 (date, type, amount, account_name, bank_name, description, reference, user_id, bank_account_id) 
-                 VALUES (?, 'deposit', ?, 'Layaway Account', 'Layaway Payment', ?, ?, ?, ?)`,
-                [dateStr, parsedAmount, description, reference, userId, bankAccountId]
-            );
-            
-            // Update bank account balance
-            if (bankAccountId) {
-                await connection.query(
-                    'UPDATE bank_accounts SET current_balance = current_balance + ? WHERE id = ?',
-                    [parsedAmount, bankAccountId]
-                );
-                console.log(`✅ Bank account balance updated: +${parsedAmount}`);
-            }
-            console.log('✅ Bank transaction recorded for layaway payment');
+        console.log("✅ Cash transaction recorded for layaway payment");
+      } else if (payment_method === "card" || payment_method === "transfer") {
+        // Get the first active bank account
+        const [accounts] = await req.db.query(
+          "SELECT id FROM bank_accounts WHERE is_active = 1 LIMIT 1",
+        );
+        const bankAccountId = accounts.length > 0 ? accounts[0].id : null;
+
+        // Record in bank_book
+        await req.db.query(
+          `INSERT INTO bank_transactions 
+                 (date, type, amount, account_name, bank_name, description, reference, user_id, bank_account_id, tenant_id) 
+                 VALUES (?, 'deposit', ?, 'Layaway Account', 'Layaway Payment', ?, ?, ?, ?, ?)`,
+          [
+            dateStr,
+            parsedAmount,
+            description,
+            reference,
+            userId,
+            bankAccountId,
+            req.user.tenant_id,
+          ],
+        );
+
+        // Update bank account balance
+        if (bankAccountId) {
+          await req.db.query(
+            "UPDATE bank_accounts SET current_balance = current_balance + ? WHERE id = ?",
+            [parsedAmount, bankAccountId],
+          );
+          console.log(`✅ Bank account balance updated: +${parsedAmount}`);
         }
-        
-        // If completed, deduct stock
-        if (newStatus === 'completed') {
-            let items = [];
-            try {
-                items = typeof order.items === 'string' ? JSON.parse(order.items) : order.items;
-            } catch (e) {
-                console.error('Failed to parse items:', e);
-            }
-            
-            for (const item of items) {
-                // Get current stock
-                const [currentStock] = await connection.query(
-                    'SELECT stock_quantity FROM products WHERE id = ?',
-                    [item.product_id]
-                );
-                const balanceBefore = currentStock[0]?.stock_quantity || 0;
-                
-                // Update stock
-                await connection.query(
-                    'UPDATE products SET stock_quantity = stock_quantity - ? WHERE id = ?',
-                    [item.quantity, item.product_id]
-                );
-                
-                const balanceAfter = balanceBefore - item.quantity;
-                
-                // Get product details
-                const [product] = await connection.query(
-                    'SELECT name, sku, unit_id FROM products WHERE id = ?',
-                    [item.product_id]
-                );
-                
-                // Record stock movement
-                await connection.query(
-                    `INSERT INTO stock_movements 
+        console.log("✅ Bank transaction recorded for layaway payment");
+      }
+
+      // If completed, deduct stock
+      if (newStatus === "completed") {
+        let items = [];
+        try {
+          items =
+            typeof order.items === "string"
+              ? JSON.parse(order.items)
+              : order.items;
+        } catch (e) {
+          console.error("Failed to parse items:", e);
+        }
+
+        for (const item of items) {
+          // Get current stock
+          const [currentStock] = await req.db.query(
+            "SELECT stock_quantity FROM products WHERE id = ?",
+            [item.product_id],
+          );
+          const balanceBefore = currentStock[0]?.stock_quantity || 0;
+
+          // Update stock
+          await req.db.query(
+            "UPDATE products SET stock_quantity = stock_quantity - ? WHERE id = ?",
+            [item.quantity, item.product_id],
+          );
+
+          const balanceAfter = balanceBefore - item.quantity;
+
+          // Get product details
+          const [product] = await req.db.query(
+            "SELECT name, sku, unit_id FROM products WHERE id = ?",
+            [item.product_id],
+          );
+
+          // Record stock movement
+          await req.db.query(
+            `INSERT INTO stock_movements 
                      (product_id, product_name, sku, date, reference, movement_type, 
-                      quantity, balance_before, balance_after, notes, user_id, invoice_number)
-                     VALUES (?, ?, ?, NOW(), ?, 'OUT', ?, ?, ?, ?, ?, ?)`,
-                    [
-                        item.product_id,
-                        product[0]?.name || '',
-                        product[0]?.sku || '',
-                        `LAYAWAY-${order.invoice_number}`,
-                        item.quantity,
-                        balanceBefore,
-                        balanceAfter,
-                        `Layaway completed - ${order.invoice_number}`,
-                        userId,
-                        order.invoice_number
-                    ]
-                );
-            }
+                      quantity, balance_before, balance_after, notes, user_id, invoice_number, tenant_id)
+                     VALUES (?, ?, ?, NOW(), ?, 'OUT', ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              item.product_id,
+              product[0]?.name || "",
+              product[0]?.sku || "",
+              `LAYAWAY-${order.invoice_number}`,
+              item.quantity,
+              balanceBefore,
+              balanceAfter,
+              `Layaway completed - ${order.invoice_number}`,
+              userId,
+              order.invoice_number,
+              req.user.tenant_id,
+            ],
+          );
         }
-        
-        await connection.commit();
-        res.json({ 
-            message: 'Payment recorded successfully', 
-            new_balance: newBalance, 
-            status: newStatus 
-        });
-        
+      }
+
+      res.json({
+        message: "Payment recorded successfully",
+        new_balance: newBalance,
+        status: newStatus,
+      });
     } catch (error) {
-        await connection.rollback();
-        console.error('Error recording layaway payment:', error);
-        res.status(500).json({ error: error.message });
-    } finally {
-        connection.release();
+      console.error("Error recording layaway payment:", error);
+      res.status(500).json({ error: error.message });
     }
-});
+  },
+);
 
 app.patch('/api/layaway/:id/complete', authenticateToken, async (req, res) => {
     const connection = await pool.connect();
