@@ -3928,45 +3928,81 @@ app.delete(
 
 // ==================== BANK ACCOUNTS ENDPOINTS ====================
 
-app.get('/api/bank-accounts', authenticateToken, async (req, res) => {
+app.get(
+  "/api/bank-accounts",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const [accounts] = await pool.query('SELECT * FROM bank_accounts WHERE is_active = 1 ORDER BY account_name');
-        res.json(accounts);
+      const [accounts] = await req.db.query(
+        "SELECT * FROM bank_accounts WHERE is_active = 1 ORDER BY account_name",
+      );
+      res.json(accounts);
     } catch (error) {
-        console.error('Error fetching bank accounts:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error fetching bank accounts:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
-app.post('/api/bank-accounts', authenticateToken, async (req, res) => {
+app.post(
+  "/api/bank-accounts",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const { account_name, bank_name, bank_id, account_number, opening_balance } = req.body;
-        const [result] = await pool.query(
-            'INSERT INTO bank_accounts (account_name, bank_name, bank_id, account_number, opening_balance, current_balance, is_active, created_at) VALUES (?, ?, ?, ?, ?, ?, 1, NOW()) RETURNING id',
-            [account_name, bank_name, bank_id, account_number, opening_balance || 0, opening_balance || 0]
-        );
-        const [newAccount] = await pool.query('SELECT * FROM bank_accounts WHERE id = ?', [result[0].id]);
-        res.json(newAccount[0]);
+      const {
+        account_name,
+        bank_name,
+        bank_id,
+        account_number,
+        opening_balance,
+      } = req.body;
+      const [result] = await req.db.query(
+        "INSERT INTO bank_accounts (account_name, bank_name, bank_id, account_number, opening_balance, current_balance, is_active, created_at, tenant_id) VALUES (?, ?, ?, ?, ?, ?, 1, NOW(), ?) RETURNING id",
+        [
+          account_name,
+          bank_name,
+          bank_id,
+          account_number,
+          opening_balance || 0,
+          opening_balance || 0,
+          req.user.tenant_id,
+        ],
+      );
+      const [newAccount] = await req.db.query(
+        "SELECT * FROM bank_accounts WHERE id = ?",
+        [result[0].id],
+      );
+      res.json(newAccount[0]);
     } catch (error) {
-        console.error('Error adding bank account:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error adding bank account:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
-app.patch('/api/bank-accounts/:id/balance', authenticateToken, async (req, res) => {
+app.patch(
+  "/api/bank-accounts/:id/balance",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const { amount, type } = req.body;
-        const operation = type === 'deposit' ? '+' : '-';
-        await pool.query(
-            `UPDATE bank_accounts SET current_balance = current_balance ${operation} ? WHERE id = ?`,
-            [amount, req.params.id]
-        );
-        res.json({ message: 'Balance updated' });
+      const { amount, type } = req.body;
+      const operation = type === "deposit" ? "+" : "-";
+      await req.db.query(
+        `UPDATE bank_accounts SET current_balance = current_balance ${operation} ? WHERE id = ?`,
+        [amount, req.params.id],
+      );
+      res.json({ message: "Balance updated" });
     } catch (error) {
-        console.error('Error updating balance:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error updating balance:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
+
+
 // ==================== CREDIT PAYMENTS ENDPOINT ====================
 
 app.post('/api/credit-payments', authenticateToken, async (req, res) => {
