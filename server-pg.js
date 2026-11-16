@@ -95,9 +95,14 @@ app.post('/api/login', async (req, res) => {
         await pool.query('UPDATE users SET last_login = NOW() WHERE id = ?', [user.id]);
         
         const token = jwt.sign(
-            { id: user.id, username: user.username, role: user.role },
-            JWT_SECRET,
-            { expiresIn: '8h' }
+          {
+            id: user.id,
+            username: user.username,
+            role: user.role,
+            tenant_id: user.tenant_id,
+          },
+          JWT_SECRET,
+          { expiresIn: "8h" },
         );
         
         res.json({
@@ -106,7 +111,7 @@ app.post('/api/login', async (req, res) => {
                 id: user.id,
                 username: user.username,
                 fullName: user.full_name,
-                role: user.role
+                role: user.role,
             }
         });
     } catch (error) {
@@ -124,14 +129,57 @@ const authenticateToken = (req, res, next) => {
     if (!token) {
         return res.status(401).json({ error: 'Access denied' });
     }
-    
+
     jwt.verify(token, JWT_SECRET, (err, user) => {
         if (err) {
-            return res.status(403).json({ error: 'Invalid token' });
+        return res.status(403).json({ error: "Invalid token" });
+        }
+        if (!user || !user.tenant_id) {
+        return res
+            .status(403)
+            .json({ error: "Token missing tenant context" });
         }
         req.user = user;
         next();
     });
+};
+
+// Tenant context middleware — must run AFTER authenticateToken.
+// Acquires a dedicated client, begins a transaction, sets app.tenant_id
+// for the duration of this request, and attaches the client as req.db.
+// Routes that touch tenant-scoped data should use req.db.query() instead
+// of pool.query(). On response finish/close, COMMIT (or ROLLBACK on error)
+// and release the client.
+const setTenantContext = async (req, res, next) => {
+    let client;
+    try {
+        client = await _pgPool.connect();
+        await client.query('BEGIN');
+        await client.query("SELECT set_config('app.tenant_id', $1, true)", [String(req.user.tenant_id)]);
+        req.db = {
+            query: async (sql, params) => {
+                const result = await client.query(_toPg(sql), params || []);
+                return [result.rows, result.fields];
+            },
+        };
+        let finished = false;
+        const cleanup = async (err) => {
+            if (finished) return;
+            finished = true;
+            try {
+                if (err) { await client.query('ROLLBACK'); }
+                else { await client.query('COMMIT'); }
+            } catch (_) { /* swallow */ }
+            client.release();
+        };
+        res.on('finish', () => cleanup(null));
+        res.on('close', () => cleanup(new Error('connection closed')));
+        next();
+    } catch (e) {
+        if (client) client.release();
+        console.error('setTenantContext error:', e.message);
+        res.status(500).json({ error: 'Tenant context failure' });
+    }
 };
 
 // ==================== TEST ENDPOINT ====================
