@@ -3523,11 +3523,16 @@ app.delete('/api/vendor-payments/:id', authenticateToken, async (req, res) => {
 
 // ==================== VENDOR INVOICES ENDPOINTS ====================
 
-app.get('/api/vendors/:id/invoices', authenticateToken, async (req, res) => {
+app.get(
+  "/api/vendors/:id/invoices",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const vendorId = req.params.id;
-        
-        const [allPOs] = await pool.query(`
+      const vendorId = req.params.id;
+
+      const [allPOs] = await req.db.query(
+        `
             SELECT 
                 po.id,
                 po.po_number,
@@ -3542,52 +3547,55 @@ app.get('/api/vendors/:id/invoices', authenticateToken, async (req, res) => {
                 AND po.status = 'received'
             GROUP BY po.id, po.po_number, po.invoice_number, po.order_date, po.total, po.status
             ORDER BY po.order_date DESC
-        `, [vendorId]);
-        
-        const grouped = {};
-        
-        for (const po of allPOs) {
-            let key;
-            if (po.invoice_number && po.invoice_number.trim() !== '') {
-                key = po.invoice_number;
-            } else {
-                key = po.po_number;
-            }
-            
-            if (!grouped[key]) {
-                grouped[key] = {
-                    invoice_number: key,
-                    invoice_date: po.order_date,
-                    purchase_orders: [],
-                    total: 0,
-                    paid: 0,
-                    balance: 0
-                };
-            }
-            
-            const balance = parseFloat(po.total) - parseFloat(po.paid_amount);
-            
-            grouped[key].purchase_orders.push({
-                id: po.id,
-                po_number: po.po_number,
-                total: parseFloat(po.total),
-                paid: parseFloat(po.paid_amount),
-                balance: balance
-            });
-            
-            grouped[key].total += parseFloat(po.total);
-            grouped[key].paid += parseFloat(po.paid_amount);
-            grouped[key].balance += balance;
+        `,
+        [vendorId],
+      );
+
+      const grouped = {};
+
+      for (const po of allPOs) {
+        let key;
+        if (po.invoice_number && po.invoice_number.trim() !== "") {
+          key = po.invoice_number;
+        } else {
+          key = po.po_number;
         }
-        
-        const result = Object.values(grouped).filter(inv => inv.balance > 0);
-        
-        res.json(result);
+
+        if (!grouped[key]) {
+          grouped[key] = {
+            invoice_number: key,
+            invoice_date: po.order_date,
+            purchase_orders: [],
+            total: 0,
+            paid: 0,
+            balance: 0,
+          };
+        }
+
+        const balance = parseFloat(po.total) - parseFloat(po.paid_amount);
+
+        grouped[key].purchase_orders.push({
+          id: po.id,
+          po_number: po.po_number,
+          total: parseFloat(po.total),
+          paid: parseFloat(po.paid_amount),
+          balance: balance,
+        });
+
+        grouped[key].total += parseFloat(po.total);
+        grouped[key].paid += parseFloat(po.paid_amount);
+        grouped[key].balance += balance;
+      }
+
+      const result = Object.values(grouped).filter((inv) => inv.balance > 0);
+
+      res.json(result);
     } catch (error) {
-        console.error('Error fetching vendor invoices:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error fetching vendor invoices:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
 // ==================== STOCK MOVEMENTS ENDPOINTS ====================
 
