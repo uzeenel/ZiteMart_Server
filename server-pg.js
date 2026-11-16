@@ -4141,98 +4141,130 @@ app.post(
 
 // ==================== LAYAWAY ENDPOINTS ====================
 
-app.post('/api/layaway', authenticateToken, async (req, res) => {
-    const connection = await pool.connect();
+app.post(
+  "/api/layaway",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        await connection.beginTransaction();
-        
-        const { saleId, customerId, invoiceNumber, totalAmount, depositAmount, items } = req.body;
-        const balance = totalAmount - depositAmount;
-        const userId = req.user.id;
-        
-        console.log('=== CREATE LAYAWAY ===');
-        console.log('Sale ID:', saleId);
-        console.log('Invoice:', invoiceNumber);
-        console.log('Total:', totalAmount);
-        console.log('Deposit:', depositAmount);
-        console.log('Balance:', balance);
-        
-        // Create layaway order
-        const [result] = await connection.query(
-            `INSERT INTO layaway_orders 
-             (sale_id, customer_id, invoice_number, total_amount, deposit_amount, paid_amount, balance, status, items, cashier_id) 
-             VALUES (?, ?, ?, ?, ?, ?, ?, 'deposit_paid', ?, ?) RETURNING id`,
-            [saleId, customerId, invoiceNumber, totalAmount, depositAmount, depositAmount, balance, items, userId]
+      const {
+        saleId,
+        customerId,
+        invoiceNumber,
+        totalAmount,
+        depositAmount,
+        items,
+      } = req.body;
+      const balance = totalAmount - depositAmount;
+      const userId = req.user.id;
+
+      console.log("=== CREATE LAYAWAY ===");
+      console.log("Sale ID:", saleId);
+      console.log("Invoice:", invoiceNumber);
+      console.log("Total:", totalAmount);
+      console.log("Deposit:", depositAmount);
+      console.log("Balance:", balance);
+
+      // Create layaway order
+      const [result] = await req.db.query(
+        `INSERT INTO layaway_orders 
+             (sale_id, customer_id, invoice_number, total_amount, deposit_amount, paid_amount, balance, status, items, cashier_id, tenant_id) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, 'deposit_paid', ?, ?, ?) RETURNING id`,
+        [
+          saleId,
+          customerId,
+          invoiceNumber,
+          totalAmount,
+          depositAmount,
+          depositAmount,
+          balance,
+          items,
+          userId,
+          req.user.tenant_id,
+        ],
+      );
+
+      const layawayId = result[0].id;
+
+      // Record the deposit payment in layaway_payments
+      await req.db.query(
+        `INSERT INTO layaway_payments 
+             (layaway_id, amount, payment_method, recorded_by, tenant_id) 
+             VALUES (?, ?, 'deposit', ?, ?)`,
+        [layawayId, depositAmount, userId, req.user.tenant_id],
+      );
+
+      // ===== RECORD DEPOSIT IN CASH/BANK BOOK =====
+      if (depositAmount > 0) {
+        const dateStr = new Date().toISOString().slice(0, 19).replace("T", " ");
+        const description = `Layaway deposit - ${invoiceNumber}`;
+        const reference = `LAY-${layawayId}`;
+
+        // Record as cash_in (default to cash for deposit)
+        await req.db.query(
+          `INSERT INTO cash_transactions 
+                 (date, type, amount, category, description, reference, user_id, tenant_id) 
+                 VALUES (?, 'cash_in', ?, 'Layaway Deposit', ?, ?, ?, ?)`,
+          [
+            dateStr,
+            depositAmount,
+            description,
+            reference,
+            userId,
+            req.user.tenant_id,
+          ],
         );
-        
-        const layawayId = result[0].id;
-        
-        // Record the deposit payment in layaway_payments
-        await connection.query(
-            `INSERT INTO layaway_payments 
-             (layaway_id, amount, payment_method, recorded_by) 
-             VALUES (?, ?, 'deposit', ?)`,
-            [layawayId, depositAmount, userId]
-        );
-        
-        // ===== RECORD DEPOSIT IN CASH/BANK BOOK =====
-        if (depositAmount > 0) {
-            const dateStr = new Date().toISOString().slice(0, 19).replace('T', ' ');
-            const description = `Layaway deposit - ${invoiceNumber}`;
-            const reference = `LAY-${layawayId}`;
-            
-            // Record as cash_in (default to cash for deposit)
-            await connection.query(
-                `INSERT INTO cash_transactions 
-                 (date, type, amount, category, description, reference, user_id) 
-                 VALUES (?, 'cash_in', ?, 'Layaway Deposit', ?, ?, ?)`,
-                [dateStr, depositAmount, description, reference, userId]
-            );
-            console.log('✅ Cash deposit recorded for layaway');
-        }
-        
-        await connection.commit();
-        res.json({ id: layawayId, message: 'Layaway created successfully' });
-        
+        console.log("✅ Cash deposit recorded for layaway");
+      }
+
+      res.json({ id: layawayId, message: "Layaway created successfully" });
     } catch (error) {
-        await connection.rollback();
-        console.error('Error creating layaway:', error);
-        res.status(500).json({ error: error.message });
-    } finally {
-        connection.release();
+      console.error("Error creating layaway:", error);
+      res.status(500).json({ error: error.message });
     }
-});
+  },
+);
 
 // ==================== LAYAWAY ENDPOINTS ====================
 
-app.get('/api/layaway', authenticateToken, async (req, res) => {
+app.get(
+  "/api/layaway",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const [orders] = await pool.query(`
+      const [orders] = await req.db.query(`
             SELECT * FROM layaway_orders 
             ORDER BY created_at DESC
         `);
-        res.json(orders);
+      res.json(orders);
     } catch (error) {
-        console.error('Error fetching layaway orders:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error fetching layaway orders:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
-app.get('/api/layaway/:id', authenticateToken, async (req, res) => {
+app.get(
+  "/api/layaway/:id",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const [orders] = await pool.query(
-            'SELECT * FROM layaway_orders WHERE id = ?',
-            [req.params.id]
-        );
-        if (orders.length === 0) {
-            return res.status(404).json({ error: 'Layaway order not found' });
-        }
-        res.json(orders[0]);
+      const [orders] = await req.db.query(
+        "SELECT * FROM layaway_orders WHERE id = ?",
+        [req.params.id],
+      );
+      if (orders.length === 0) {
+        return res.status(404).json({ error: "Layaway order not found" });
+      }
+      res.json(orders[0]);
     } catch (error) {
-        console.error('Error fetching layaway order:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error fetching layaway order:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
 // Record layaway payment
 app.post('/api/layaway/:id/payment', authenticateToken, async (req, res) => {
