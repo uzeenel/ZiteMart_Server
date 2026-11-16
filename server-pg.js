@@ -601,7 +601,9 @@ app.get('/api/dashboard', authenticateToken, async (req, res) => {
         const [todaySales] = await pool.query('SELECT COALESCE(SUM(total), 0) as total, COUNT(*) as count FROM sales WHERE sale_date::date = ?', [today]);
         const [weekSales] = await pool.query('SELECT COALESCE(SUM(total), 0) as total FROM sales WHERE sale_date >= ?', [weekAgo]);
         const [monthSales] = await pool.query('SELECT COALESCE(SUM(total), 0) as total FROM sales WHERE sale_date >= ?', [monthAgo]);
-        const [lowStock] = await pool.query('SELECT COUNT(*) as count FROM products WHERE stock_quantity < min_stock_level AND stock_quantity > 0');
+        const [lowStock] = await req.db.query(
+            "SELECT COUNT(*) as count FROM products WHERE stock_quantity < min_stock_level AND stock_quantity > 0",
+        );             
         const [outOfStock] = await pool.query('SELECT COUNT(*) as count FROM products WHERE stock_quantity <= 0');
         const [totalCustomers] = await pool.query('SELECT COUNT(*) as count FROM customers WHERE is_active = 1');
         
