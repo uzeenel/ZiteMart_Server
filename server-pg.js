@@ -4700,230 +4700,276 @@ app.post(
 // ==================== ROLES & PERMISSIONS ENDPOINTS ====================
 
 // Get all roles with their permission counts
-app.get('/api/roles', authenticateToken, async (req, res) => {
-    if (req.user.role !== 'admin') {
-        return res.status(403).json({ error: 'Access denied' });
-    }
+app.get("/api/roles", authenticateToken, setTenantContext, async (req, res) => {
+  if (req.user.role !== "admin") {
+    return res.status(403).json({ error: "Access denied" });
+  }
 
-    try {
-        const [roles] = await pool.query(`
+  try {
+    const [roles] = await req.db.query(`
             SELECT r.*, 
                 (SELECT COUNT(*) FROM role_permissions WHERE role_id = r.id) AS permission_count,
                 (SELECT COUNT(*) FROM users WHERE role_id = r.id) AS user_count
             FROM roles r
             ORDER BY r.is_system DESC, r.name
         `);
-        res.json(roles);
-    } catch (error) {
-        console.error('Error fetching roles:', error);
-        res.status(500).json({ error: 'Server error' });
-    }
+    res.json(roles);
+  } catch (error) {
+    console.error("Error fetching roles:", error);
+    res.status(500).json({ error: "Server error" });
+  }
 });
 
 // Get permission catalog (all available permissions, grouped)
-app.get('/api/permissions', authenticateToken, async (req, res) => {
-    if (req.user.role !== 'admin') {
-        return res.status(403).json({ error: 'Access denied' });
-    }
+// NOTE: permissions is a GLOBAL table (no tenant_id). Stays on pool.query.
+app.get("/api/permissions", authenticateToken, async (req, res) => {
+  if (req.user.role !== "admin") {
+    return res.status(403).json({ error: "Access denied" });
+  }
 
-    try {
-        const [permissions] = await pool.query(
-            'SELECT * FROM permissions ORDER BY category, sort_order'
-        );
-        res.json(permissions);
-    } catch (error) {
-        console.error('Error fetching permissions:', error);
-        res.status(500).json({ error: 'Server error' });
-    }
+  try {
+    const [permissions] = await pool.query(
+      "SELECT * FROM permissions ORDER BY category, sort_order",
+    );
+    res.json(permissions);
+  } catch (error) {
+    console.error("Error fetching permissions:", error);
+    res.status(500).json({ error: "Server error" });
+  }
 });
 
 // Get a single role with its permission ids
-app.get('/api/roles/:id', authenticateToken, async (req, res) => {
-    if (req.user.role !== 'admin') {
-        return res.status(403).json({ error: 'Access denied' });
+app.get(
+  "/api/roles/:id",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ error: "Access denied" });
     }
 
     try {
-        const [roles] = await pool.query('SELECT * FROM roles WHERE id = ?', [req.params.id]);
-        if (roles.length === 0) {
-            return res.status(404).json({ error: 'Role not found' });
-        }
+      const [roles] = await req.db.query("SELECT * FROM roles WHERE id = ?", [
+        req.params.id,
+      ]);
+      if (roles.length === 0) {
+        return res.status(404).json({ error: "Role not found" });
+      }
 
-        const [perms] = await pool.query(
-            'SELECT permission_id FROM role_permissions WHERE role_id = ?',
-            [req.params.id]
-        );
+      const [perms] = await req.db.query(
+        "SELECT permission_id FROM role_permissions WHERE role_id = ?",
+        [req.params.id],
+      );
 
-        res.json({
-            ...roles[0],
-            permission_ids: perms.map(p => p.permission_id)
-        });
+      res.json({
+        ...roles[0],
+        permission_ids: perms.map((p) => p.permission_id),
+      });
     } catch (error) {
-        console.error('Error fetching role:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error fetching role:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
 // Create a new role
-app.post('/api/roles', authenticateToken, async (req, res) => {
-    if (req.user.role !== 'admin') {
-        return res.status(403).json({ error: 'Access denied' });
+app.post(
+  "/api/roles",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ error: "Access denied" });
     }
 
     try {
-        const { name, description } = req.body;
-        if (!name || name.trim() === '') {
-            return res.status(400).json({ error: 'Role name is required' });
-        }
+      const { name, description } = req.body;
+      if (!name || name.trim() === "") {
+        return res.status(400).json({ error: "Role name is required" });
+      }
 
-        const [existing] = await pool.query('SELECT id FROM roles WHERE name = ?', [name]);
-        if (existing.length > 0) {
-            return res.status(400).json({ error: 'Role name already exists' });
-        }
+      const [existing] = await req.db.query(
+        "SELECT id FROM roles WHERE name = ?",
+        [name],
+      );
+      if (existing.length > 0) {
+        return res.status(400).json({ error: "Role name already exists" });
+      }
 
-        const [result] = await pool.query(
-            'INSERT INTO roles (name, description, is_system) VALUES (?, ?, 0) RETURNING id',
-            [name.trim(), description || null]
-        );
+      const [result] = await req.db.query(
+        "INSERT INTO roles (name, description, is_system, tenant_id) VALUES (?, ?, 0, ?) RETURNING id",
+        [name.trim(), description || null, req.user.tenant_id],
+      );
 
-        res.json({ id: result[0].id, message: 'Role created' });
+      res.json({ id: result[0].id, message: "Role created" });
     } catch (error) {
-        console.error('Error creating role:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error creating role:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
 // Update role name/description
-app.put('/api/roles/:id', authenticateToken, async (req, res) => {
-    if (req.user.role !== 'admin') {
-        return res.status(403).json({ error: 'Access denied' });
+app.put(
+  "/api/roles/:id",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ error: "Access denied" });
     }
 
     try {
-        const { name, description } = req.body;
+      const { name, description } = req.body;
 
-        const [roles] = await pool.query('SELECT is_system FROM roles WHERE id = ?', [req.params.id]);
-        if (roles.length === 0) {
-            return res.status(404).json({ error: 'Role not found' });
-        }
+      const [roles] = await req.db.query(
+        "SELECT is_system FROM roles WHERE id = ?",
+        [req.params.id],
+      );
+      if (roles.length === 0) {
+        return res.status(404).json({ error: "Role not found" });
+      }
 
-        const [adminRole] = await pool.query("SELECT id FROM roles WHERE name = 'admin' LIMIT 1");
-        if (adminRole.length > 0 && adminRole[0].id === parseInt(req.params.id)) {
-            return res.status(400).json({ error: 'The admin role cannot be deleted' });
-        }
+      const [adminRole] = await req.db.query(
+        "SELECT id FROM roles WHERE name = 'admin' LIMIT 1",
+      );
+      if (adminRole.length > 0 && adminRole[0].id === parseInt(req.params.id)) {
+        return res
+          .status(400)
+          .json({ error: "The admin role cannot be deleted" });
+      }
 
-        await pool.query(
-            'UPDATE roles SET name = ?, description = ? WHERE id = ?',
-            [name, description || null, req.params.id]
-        );
+      await req.db.query(
+        "UPDATE roles SET name = ?, description = ? WHERE id = ?",
+        [name, description || null, req.params.id],
+      );
 
-        res.json({ message: 'Role updated' });
+      res.json({ message: "Role updated" });
     } catch (error) {
-        console.error('Error updating role:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error updating role:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
 // Delete a role
-app.delete('/api/roles/:id', authenticateToken, async (req, res) => {
-    if (req.user.role !== 'admin') {
-        return res.status(403).json({ error: 'Access denied' });
+app.delete(
+  "/api/roles/:id",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ error: "Access denied" });
     }
 
     try {
-        const [roles] = await pool.query('SELECT is_system FROM roles WHERE id = ?', [req.params.id]);
-        if (roles.length === 0) {
-            return res.status(404).json({ error: 'Role not found' });
-        }
+      const [roles] = await req.db.query(
+        "SELECT is_system FROM roles WHERE id = ?",
+        [req.params.id],
+      );
+      if (roles.length === 0) {
+        return res.status(404).json({ error: "Role not found" });
+      }
 
-        if (roles[0].is_system) {
-            return res.status(400).json({ error: 'System roles cannot be deleted' });
-        }
+      if (roles[0].is_system) {
+        return res
+          .status(400)
+          .json({ error: "System roles cannot be deleted" });
+      }
 
-        const [users] = await pool.query(
-            'SELECT COUNT(*) AS count FROM users WHERE role_id = ?',
-            [req.params.id]
+      const [users] = await req.db.query(
+        "SELECT COUNT(*) AS count FROM users WHERE role_id = ?",
+        [req.params.id],
+      );
+      if (users[0].count > 0) {
+        return res.status(400).json({
+          error: `Cannot delete: ${users[0].count} user(s) are assigned to this role`,
+        });
+      }
+
+      await req.db.query("DELETE FROM roles WHERE id = ?", [req.params.id]);
+      res.json({ message: "Role deleted" });
+    } catch (error) {
+      console.error("Error deleting role:", error);
+      res.status(500).json({ error: "Server error" });
+    }
+  },
+);
+
+app.put(
+  "/api/roles/:id/permissions",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ error: "Access denied" });
+    }
+
+    try {
+      const { permission_ids } = req.body;
+      if (!Array.isArray(permission_ids)) {
+        return res
+          .status(400)
+          .json({ error: "permission_ids must be an array" });
+      }
+
+      const [roles] = await req.db.query("SELECT id FROM roles WHERE id = ?", [
+        req.params.id,
+      ]);
+      if (roles.length === 0) {
+        return res.status(404).json({ error: "Role not found" });
+      }
+
+      await req.db.query("DELETE FROM role_permissions WHERE role_id = ?", [
+        req.params.id,
+      ]);
+
+      if (permission_ids.length > 0) {
+        const placeholders = permission_ids.map(() => "(?, ?, ?)").join(", ");
+        const flatParams = [];
+        for (const pid of permission_ids) {
+          flatParams.push(req.params.id, pid, req.user.tenant_id);
+        }
+        await req.db.query(
+          `INSERT INTO role_permissions (role_id, permission_id, tenant_id) VALUES ${placeholders}`,
+          flatParams,
         );
-        if (users[0].count > 0) {
-            return res.status(400).json({
-                error: `Cannot delete: ${users[0].count} user(s) are assigned to this role`
-            });
-        }
+      }
 
-        await pool.query('DELETE FROM roles WHERE id = ?', [req.params.id]);
-        res.json({ message: 'Role deleted' });
+      res.json({ message: "Permissions updated" });
     } catch (error) {
-        console.error('Error deleting role:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error updating permissions:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
-
-// Set a role's permissions (replaces the whole set)
-app.put('/api/roles/:id/permissions', authenticateToken, async (req, res) => {
-    if (req.user.role !== 'admin') {
-        return res.status(403).json({ error: 'Access denied' });
-    }
-
-    const connection = await pool.connect();
-    try {
-        await connection.beginTransaction();
-
-        const { permission_ids } = req.body;
-        if (!Array.isArray(permission_ids)) {
-            await connection.rollback();
-            return res.status(400).json({ error: 'permission_ids must be an array' });
-        }
-
-        const [roles] = await connection.query('SELECT id FROM roles WHERE id = ?', [req.params.id]);
-        if (roles.length === 0) {
-            await connection.rollback();
-            return res.status(404).json({ error: 'Role not found' });
-        }
-
-        await connection.query('DELETE FROM role_permissions WHERE role_id = ?', [req.params.id]);
-
-        if (permission_ids.length > 0) {
-            // PostgreSQL multi-row insert: build ($1,$2),($3,$4),... and flatten params
-            const placeholders = permission_ids.map(() => '(?, ?)').join(', ');
-            const flatParams = [];
-            for (const pid of permission_ids) {
-                flatParams.push(req.params.id, pid);
-            }
-            await connection.query(
-                `INSERT INTO role_permissions (role_id, permission_id) VALUES ${placeholders}`,
-                flatParams
-            );
-        }
-
-        await connection.commit();
-        res.json({ message: 'Permissions updated' });
-    } catch (error) {
-        await connection.rollback();
-        console.error('Error updating permissions:', error);
-        res.status(500).json({ error: 'Server error' });
-    } finally {
-        connection.release();
-    }
-});
+  },
+);
 
 // Get the current user's permissions (for the Flutter app)
-app.get('/api/my-permissions', authenticateToken, async (req, res) => {
+app.get(
+  "/api/my-permissions",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const [rows] = await pool.query(`
+      const [rows] = await req.db.query(
+        `
             SELECT p.code
             FROM role_permissions rp
             JOIN permissions p ON rp.permission_id = p.id
             JOIN users u ON u.role_id = rp.role_id
             WHERE u.id = ?
-        `, [req.user.id]);
+        `,
+        [req.user.id],
+      );
 
-        const codes = rows.map(r => r.code);
-        res.json({ permissions: codes });
+      const codes = rows.map((r) => r.code);
+      res.json({ permissions: codes });
     } catch (error) {
-        console.error('Error fetching my permissions:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error fetching my permissions:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
 
 // ==================== START SERVER ====================
