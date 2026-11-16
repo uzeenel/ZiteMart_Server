@@ -3485,57 +3485,84 @@ app.patch(
 
 // ==================== VENDOR PAYMENTS ENDPOINTS ====================
 
-app.post('/api/vendor-payments', authenticateToken, async (req, res) => {
-    const connection = await pool.connect();
+app.post(
+  "/api/vendor-payments",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        await connection.beginTransaction();
-        
-        const { vendorId, purchaseOrderId, paymentDate, amount, paymentMethod, reference, notes, createdBy, bankAccountId } = req.body;
-        
-        console.log('=== VENDOR PAYMENT ===');
-        console.log('bankAccountId:', bankAccountId);
-        console.log('paymentMethod:', paymentMethod);
-        console.log('amount:', amount);
-        
-        const [result] = await connection.query(
-            `INSERT INTO vendor_payments 
-             (vendor_id, purchase_order_id, payment_date, amount, payment_method, reference, notes, created_by, created_at, updated_at) 
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW()) RETURNING id`,
-            [vendorId, purchaseOrderId || null, paymentDate, amount, paymentMethod, reference, notes, createdBy]
+      const {
+        vendorId,
+        purchaseOrderId,
+        paymentDate,
+        amount,
+        paymentMethod,
+        reference,
+        notes,
+        createdBy,
+        bankAccountId,
+      } = req.body;
+
+      console.log("=== VENDOR PAYMENT ===");
+      console.log("bankAccountId:", bankAccountId);
+      console.log("paymentMethod:", paymentMethod);
+      console.log("amount:", amount);
+
+      const [result] = await req.db.query(
+        `INSERT INTO vendor_payments 
+             (vendor_id, purchase_order_id, payment_date, amount, payment_method, reference, notes, created_by, created_at, updated_at, tenant_id) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), ?) RETURNING id`,
+        [
+          vendorId,
+          purchaseOrderId || null,
+          paymentDate,
+          amount,
+          paymentMethod,
+          reference,
+          notes,
+          createdBy,
+          req.user.tenant_id,
+        ],
+      );
+
+      // Update bank account balance if this is a bank payment
+      if (
+        bankAccountId &&
+        (paymentMethod === "Bank Transfer" || paymentMethod === "Cheque")
+      ) {
+        await req.db.query(
+          "UPDATE bank_accounts SET current_balance = current_balance - ? WHERE id = ?",
+          [amount, bankAccountId],
         );
-        
-        // Update bank account balance if this is a bank payment
-        if (bankAccountId && (paymentMethod === 'Bank Transfer' || paymentMethod === 'Cheque')) {
-            await connection.query(
-                'UPDATE bank_accounts SET current_balance = current_balance - ? WHERE id = ?',
-                [amount, bankAccountId]
-            );
-            console.log(`Subtracted ${amount} from bank account ${bankAccountId}`);
-        }
-        
-        await connection.commit();
-        
-        const [newPayment] = await pool.query(`
+        console.log(`Subtracted ${amount} from bank account ${bankAccountId}`);
+      }
+
+      const [newPayment] = await req.db.query(
+        `
             SELECT vp.*, v.name as vendor_name, po.po_number as purchase_order_number
             FROM vendor_payments vp
             LEFT JOIN vendors v ON vp.vendor_id = v.id
             LEFT JOIN purchase_orders po ON vp.purchase_order_id = po.id
             WHERE vp.id = ?
-        `, [result[0].id]);
-        
-        res.json(newPayment[0]);
-    } catch (error) {
-        await connection.rollback();
-        console.error('Error adding vendor payment:', error);
-        res.status(500).json({ error: 'Server error' });
-    } finally {
-        connection.release();
-    }
-});
+        `,
+        [result[0].id],
+      );
 
-app.get('/api/vendor-payments/summary', authenticateToken, async (req, res) => {
+      res.json(newPayment[0]);
+    } catch (error) {
+      console.error("Error adding vendor payment:", error);
+      res.status(500).json({ error: "Server error" });
+    }
+  },
+);
+
+app.get(
+  "/api/vendor-payments/summary",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const [vendors] = await pool.query(`
+      const [vendors] = await req.db.query(`
             SELECT 
                 v.id as vendor_id,
                 v.name as vendor_name,
@@ -3547,57 +3574,30 @@ app.get('/api/vendor-payments/summary', authenticateToken, async (req, res) => {
             WHERE v.is_active = 1
             ORDER BY v.name
         `);
-        res.json(vendors);
+      res.json(vendors);
     } catch (error) {
-        console.error('Error fetching vendor payment summary:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error fetching vendor payment summary:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
-
-app.post('/api/vendor-payments', authenticateToken, async (req, res) => {
-    const connection = await pool.connect();
+app.delete(
+  "/api/vendor-payments/:id",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        await connection.beginTransaction();
-        
-        const { vendorId, purchaseOrderId, paymentDate, amount, paymentMethod, reference, notes, createdBy } = req.body;
-        
-        const [result] = await connection.query(
-            `INSERT INTO vendor_payments 
-             (vendor_id, purchase_order_id, payment_date, amount, payment_method, reference, notes, created_by, created_at, updated_at) 
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW()) RETURNING id`,
-            [vendorId, purchaseOrderId || null, paymentDate, amount, paymentMethod, reference, notes, createdBy]
-        );
-        
-        await connection.commit();
-        
-        const [newPayment] = await pool.query(`
-            SELECT vp.*, v.name as vendor_name, po.po_number as purchase_order_number
-            FROM vendor_payments vp
-            LEFT JOIN vendors v ON vp.vendor_id = v.id
-            LEFT JOIN purchase_orders po ON vp.purchase_order_id = po.id
-            WHERE vp.id = ?
-        `, [result[0].id]);
-        
-        res.json(newPayment[0]);
+      await req.db.query("DELETE FROM vendor_payments WHERE id = ?", [
+        req.params.id,
+      ]);
+      res.json({ message: "Payment deleted successfully" });
     } catch (error) {
-        await connection.rollback();
-        console.error('Error adding vendor payment:', error);
-        res.status(500).json({ error: 'Server error' });
-    } finally {
-        connection.release();
+      console.error("Error deleting vendor payment:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
-
-app.delete('/api/vendor-payments/:id', authenticateToken, async (req, res) => {
-    try {
-        await pool.query('DELETE FROM vendor_payments WHERE id = ?', [req.params.id]);
-        res.json({ message: 'Payment deleted successfully' });
-    } catch (error) {
-        console.error('Error deleting vendor payment:', error);
-        res.status(500).json({ error: 'Server error' });
-    }
-});
+  },
+);
 
 // ==================== VENDOR INVOICES ENDPOINTS ====================
 
