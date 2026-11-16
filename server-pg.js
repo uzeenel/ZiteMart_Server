@@ -2766,8 +2766,8 @@ app.patch(
       );
 
         await req.db.query(
-        "UPDATE notifications SET is_read = 1 WHERE id = ? AND user_id = ?",
-        [req.params.id, req.user.id],
+            `UPDATE notifications SET is_read = 1 WHERE reference_id = ? AND type IN ('credit_approved', 'credit_rejected')`,
+            [creditSale[0].sale_id],
         );
 
       res.json({ message: "Credit sale completed. Stock deducted." });
