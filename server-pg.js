@@ -592,31 +592,55 @@ app.patch('/api/products/:id/set-stock', authenticateToken, async (req, res) => 
 
 // ==================== DASHBOARD ENDPOINTS ====================
 
-app.get('/api/dashboard', authenticateToken, async (req, res) => {
+app.get(
+  "/api/dashboard",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const today = new Date().toISOString().split('T')[0];
-        const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-        const monthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
-        
-        const [todaySales] = await pool.query('SELECT COALESCE(SUM(total), 0) as total, COUNT(*) as count FROM sales WHERE sale_date::date = ?', [today]);
-        const [weekSales] = await pool.query('SELECT COALESCE(SUM(total), 0) as total FROM sales WHERE sale_date >= ?', [weekAgo]);
-        const [monthSales] = await pool.query('SELECT COALESCE(SUM(total), 0) as total FROM sales WHERE sale_date >= ?', [monthAgo]);
-        const [lowStock] = await req.db.query(
-            "SELECT COUNT(*) as count FROM products WHERE stock_quantity < min_stock_level AND stock_quantity > 0",
-        );             
-        const [outOfStock] = await pool.query('SELECT COUNT(*) as count FROM products WHERE stock_quantity <= 0');
-        const [totalCustomers] = await pool.query('SELECT COUNT(*) as count FROM customers WHERE is_active = 1');
-        
-        const [categories] = await pool.query(`
+      const today = new Date().toISOString().split("T")[0];
+      const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+        .toISOString()
+        .split("T")[0];
+      const monthAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+        .toISOString()
+        .split("T")[0];
+
+      const [todaySales] = await req.db.query(
+        "SELECT COALESCE(SUM(total), 0) as total, COUNT(*) as count FROM sales WHERE sale_date::date = ?",
+        [today],
+      );
+      const [weekSales] = await req.db.query(
+        "SELECT COALESCE(SUM(total), 0) as total FROM sales WHERE sale_date >= ?",
+        [weekAgo],
+      );
+      const [monthSales] = await req.db.query(
+        "SELECT COALESCE(SUM(total), 0) as total FROM sales WHERE sale_date >= ?",
+        [monthAgo],
+      );
+      const [lowStock] = await req.db.query(
+        "SELECT COUNT(*) as count FROM products WHERE stock_quantity < min_stock_level AND stock_quantity > 0",
+      );
+      const [outOfStock] = await req.db.query(
+        "SELECT COUNT(*) as count FROM products WHERE stock_quantity <= 0",
+      );
+      const [totalCustomers] = await req.db.query(
+        "SELECT COUNT(*) as count FROM customers WHERE is_active = 1",
+      );
+
+      const [categories] = await req.db.query(
+        `
             SELECT p.category_name, SUM(si.quantity) as quantity, SUM(si.total) as revenue
             FROM sale_items si
             JOIN products p ON si.product_id = p.id
             JOIN sales s ON si.sale_id = s.id
             WHERE s.sale_date >= ?
             GROUP BY p.category_name
-        `, [weekAgo]);
-        
-        const [last7Days] = await pool.query(`
+        `,
+        [weekAgo],
+      );
+
+      const [last7Days] = await req.db.query(`
             SELECT TO_CHAR(dates.date, 'YYYY-MM-DD') as date,
                    COALESCE(SUM(s.total), 0) as total,
                    COUNT(s.id) as transactions
@@ -626,34 +650,42 @@ app.get('/api/dashboard', authenticateToken, async (req, res) => {
             LEFT JOIN sales s ON s.sale_date::date = dates.date
             GROUP BY dates.date ORDER BY dates.date
         `);
-        
-        const [topProducts] = await pool.query(`
+
+      const [topProducts] = await req.db.query(
+        `
             SELECT p.name, p.sku, SUM(si.quantity) as quantity_sold, SUM(si.total) as revenue
             FROM sale_items si
             JOIN products p ON si.product_id = p.id
             JOIN sales s ON si.sale_id = s.id
             WHERE s.sale_date >= ?
             GROUP BY p.id, p.name, p.sku ORDER BY revenue DESC LIMIT 5
-        `, [weekAgo]);
-        
-        res.json({
-            totalSalesToday: todaySales[0].total,
-            totalTransactionsToday: todaySales[0].count,
-            totalSalesThisWeek: weekSales[0].total,
-            totalSalesThisMonth: monthSales[0].total,
-            averageTicketToday: todaySales[0].count > 0 ? todaySales[0].total / todaySales[0].count : 0,
-            lowStockCount: lowStock[0].count,
-            outOfStockCount: outOfStock[0].count,
-            totalCustomers: totalCustomers[0].count,
-            salesByCategory: categories,
-            last7DaysSales: last7Days,
-            topProducts: topProducts
-        });
+        `,
+        [weekAgo],
+      );
+
+      res.json({
+        totalSalesToday: todaySales[0].total,
+        totalTransactionsToday: todaySales[0].count,
+        totalSalesThisWeek: weekSales[0].total,
+        totalSalesThisMonth: monthSales[0].total,
+        averageTicketToday:
+          todaySales[0].count > 0
+            ? todaySales[0].total / todaySales[0].count
+            : 0,
+        lowStockCount: lowStock[0].count,
+        outOfStockCount: outOfStock[0].count,
+        totalCustomers: totalCustomers[0].count,
+        salesByCategory: categories,
+        last7DaysSales: last7Days,
+        topProducts: topProducts,
+      });
     } catch (error) {
-        console.error('Error fetching dashboard:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error fetching dashboard:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
+
 
 // ==================== SALES ENDPOINTS ====================
 
