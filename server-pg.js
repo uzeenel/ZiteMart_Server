@@ -2838,103 +2838,184 @@ app.patch(
 
 // ==================== CUSTOMERS ENDPOINTS ====================
 
-app.get('/api/customers', authenticateToken, async (req, res) => {
+app.get(
+  "/api/customers",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const [customers] = await pool.query(`
+      const [customers] = await req.db.query(`
             SELECT c.*, s.name as state_name 
             FROM customers c
             LEFT JOIN states s ON c.state_id = s.id
             WHERE c.is_active = 1 
             ORDER BY c.name
         `);
-        res.json(customers);
+      res.json(customers);
     } catch (error) {
-        console.error('Error fetching customers:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error fetching customers:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
-app.get('/api/customers/:id', authenticateToken, async (req, res) => {
+app.get(
+  "/api/customers/:id",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const [customers] = await pool.query(`
+      const [customers] = await req.db.query(
+        `
             SELECT c.*, s.name as state_name 
             FROM customers c
             LEFT JOIN states s ON c.state_id = s.id
             WHERE c.id = ?
-        `, [req.params.id]);
-        
-        if (customers.length === 0) {
-            return res.status(404).json({ error: 'Customer not found' });
-        }
-        res.json(customers[0]);
-    } catch (error) {
-        console.error('Error fetching customer:', error);
-        res.status(500).json({ error: 'Server error' });
-    }
-});
+        `,
+        [req.params.id],
+      );
 
-app.post('/api/customers', authenticateToken, async (req, res) => {
+      if (customers.length === 0) {
+        return res.status(404).json({ error: "Customer not found" });
+      }
+      res.json(customers[0]);
+    } catch (error) {
+      console.error("Error fetching customer:", error);
+      res.status(500).json({ error: "Server error" });
+    }
+  },
+);
+
+app.post(
+  "/api/customers",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const { name, phone, email, address, stateId, taxId, creditLimit, creditDays } = req.body;
-        
-        const [result] = await pool.query(
-            `INSERT INTO customers (name, phone, email, address, state_id, tax_id, credit_limit, credit_days, is_active, created_at, updated_at) 
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, NOW(), NOW()) RETURNING id`,
-            [name, phone, email, address, stateId, taxId, creditLimit || 0, creditDays || 0]
-        );
-        
-        const [newCustomer] = await pool.query(`
+      const {
+        name,
+        phone,
+        email,
+        address,
+        stateId,
+        taxId,
+        creditLimit,
+        creditDays,
+      } = req.body;
+
+      const [result] = await req.db.query(
+        `INSERT INTO customers (name, phone, email, address, state_id, tax_id, credit_limit, credit_days, is_active, created_at, updated_at, tenant_id) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, NOW(), NOW(), ?) RETURNING id`,
+        [
+          name,
+          phone,
+          email,
+          address,
+          stateId,
+          taxId,
+          creditLimit || 0,
+          creditDays || 0,
+          req.user.tenant_id,
+        ],
+      );
+
+      const [newCustomer] = await req.db.query(
+        `
             SELECT c.*, s.name as state_name 
             FROM customers c
             LEFT JOIN states s ON c.state_id = s.id
             WHERE c.id = ?
-        `, [result[0].id]);
-        
-        res.json(newCustomer[0]);
-    } catch (error) {
-        console.error('Error adding customer:', error);
-        res.status(500).json({ error: 'Server error' });
-    }
-});
+        `,
+        [result[0].id],
+      );
 
-app.put('/api/customers/:id', authenticateToken, async (req, res) => {
+      res.json(newCustomer[0]);
+    } catch (error) {
+      console.error("Error adding customer:", error);
+      res.status(500).json({ error: "Server error" });
+    }
+  },
+);
+
+app.put(
+  "/api/customers/:id",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const { name, phone, email, address, stateId, taxId, creditLimit, creditDays, isActive } = req.body;
-        
-        await pool.query(
-            `UPDATE customers SET 
-                name = ?, phone = ?, email = ?, address = ?, state_id = ?, tax_id = ?,
+      const {
+        name,
+        phone,
+        email,
+        address,
+        stateId,
+        taxId,
+        creditLimit,
+        creditDays,
+        isActive,
+      } = req.body;
+
+      await req.db.query(
+        `UPDATE customers SET 
+                name = ?, phone = ?, email = ?, address = ?, state_id = ?, tax_id =?,
                 credit_limit = ?, credit_days = ?, is_active = ?, updated_at = NOW()
              WHERE id = ?`,
-            [name, phone, email, address, stateId, taxId, creditLimit || 0, creditDays || 0, isActive === undefined ? 1 : (isActive ? 1 : 0), req.params.id]
-        );
-        
-        res.json({ message: 'Customer updated successfully' });
-    } catch (error) {
-        console.error('Error updating customer:', error);
-        res.status(500).json({ error: 'Server error' });
-    }
-});
+        [
+          name,
+          phone,
+          email,
+          address,
+          stateId,
+          taxId,
+          creditLimit || 0,
+          creditDays || 0,
+          isActive === undefined ? 1 : isActive ? 1 : 0,
+          req.params.id,
+        ],
+      );
 
-app.delete('/api/customers/:id', authenticateToken, async (req, res) => {
-    try {
-        await pool.query('UPDATE customers SET is_active = 0 WHERE id = ?', [req.params.id]);
-        res.json({ message: 'Customer deleted successfully' });
+      res.json({ message: "Customer updated successfully" });
     } catch (error) {
-        console.error('Error deleting customer:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error updating customer:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
-app.get('/api/customers/:id/balance', authenticateToken, async (req, res) => {
+app.delete(
+  "/api/customers/:id",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const [purchases] = await pool.query('SELECT COALESCE(SUM(total), 0) as total FROM sales WHERE customer_id = ?', [req.params.id]);
-        res.json({ balance: purchases[0].total || 0 });
+      await req.db.query("UPDATE customers SET is_active = 0 WHERE id = ?", [
+        req.params.id,
+      ]);
+      res.json({ message: "Customer deleted successfully" });
     } catch (error) {
-        console.error('Error fetching customer balance:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error deleting customer:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
+
+app.get(
+  "/api/customers/:id/balance",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
+    try {
+      const [purchases] = await req.db.query(
+        "SELECT COALESCE(SUM(total), 0) as total FROM sales WHERE customer_id = ?",
+        [req.params.id],
+      );
+      res.json({ balance: purchases[0].total || 0 });
+    } catch (error) {
+      console.error("Error fetching customer balance:", error);
+      res.status(500).json({ error: "Server error" });
+    }
+  },
+);
 
 // ==================== VENDORS ENDPOINTS ====================
 
