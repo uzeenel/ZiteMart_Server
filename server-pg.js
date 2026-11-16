@@ -3677,102 +3677,144 @@ app.get(
 
 // ==================== STOCK MOVEMENTS ENDPOINTS ====================
 
-app.get('/api/stock-movements', authenticateToken, async (req, res) => {
+app.get(
+  "/api/stock-movements",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const { productId, start, end, reference } = req.query;
-        let query = 'SELECT * FROM stock_movements WHERE 1=1';
-        let params = [];
-        
-        if (productId) {
-            query += ' AND product_id = ?';
-            params.push(productId);
-        }
-        if (start && end) {
-            query += ' AND date BETWEEN ? AND ?';
-            params.push(start, end);
-        }
-        if (reference) {
-            query += ' AND reference = ?';
-            params.push(reference);
-        }
-        
-        query += ' ORDER BY date DESC';
-        
-        const [movements] = await pool.query(query, params);
-        res.json(movements);
-    } catch (error) {
-        console.error('Error fetching stock movements:', error);
-        res.status(500).json({ error: 'Server error' });
-    }
-});
+      const { productId, start, end, reference } = req.query;
+      let query = "SELECT * FROM stock_movements WHERE 1=1";
+      let params = [];
 
-app.get('/api/products/:id/bincard', authenticateToken, async (req, res) => {
+      if (productId) {
+        query += " AND product_id = ?";
+        params.push(productId);
+      }
+      if (start && end) {
+        query += " AND date BETWEEN ? AND ?";
+        params.push(start, end);
+      }
+      if (reference) {
+        query += " AND reference = ?";
+        params.push(reference);
+      }
+
+      query += " ORDER BY date DESC";
+
+      const [movements] = await req.db.query(query, params);
+      res.json(movements);
+    } catch (error) {
+      console.error("Error fetching stock movements:", error);
+      res.status(500).json({ error: "Server error" });
+    }
+  },
+);
+
+app.get(
+  "/api/products/:id/bincard",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const productId = req.params.id;
-        
-        const [movements] = await pool.query(`
+      const productId = req.params.id;
+
+      const [movements] = await req.db.query(
+        `
             SELECT * FROM stock_movements 
             WHERE product_id = ? 
             ORDER BY date DESC
-        `, [productId]);
-        
-        res.json(movements);
-    } catch (error) {
-        console.error('Error fetching bincard:', error);
-        res.status(500).json({ error: 'Server error' });
-    }
-});
+        `,
+        [productId],
+      );
 
-app.post('/api/stock-movements', authenticateToken, async (req, res) => {
-    const connection = await pool.connect();
-    try {
-        await connection.beginTransaction();
-        
-        const { product_id, reference, movement_type, quantity, notes, invoice_number } = req.body;
-        
-        console.log('=== STOCK MOVEMENT ===');
-        console.log('product_id:', product_id);
-        console.log('movement_type:', movement_type);
-        console.log('quantity:', quantity);
-        
-        const balanceBefore = 0;
-        
-        const adjustment = movement_type === 'IN' ? quantity : -quantity;
-       
-        const [product] = await connection.query('SELECT name, sku, unit_id FROM products WHERE id = ?', [product_id]);
-        
-        let unitSymbol = '';
-        if (product[0]?.unit_id) {
-            const [unit] = await connection.query('SELECT symbol FROM units WHERE id = ?', [product[0].unit_id]);
-            unitSymbol = unit[0]?.symbol || '';
-        }
-        
-        // Get the actual stock after update
-        const [afterStock] = await connection.query('SELECT stock_quantity FROM products WHERE id = ?', [product_id]);
-        const balanceAfter = afterStock[0]?.stock_quantity || 0;
-                
-        const [result] = await connection.query(
-            `INSERT INTO stock_movements 
-             (product_id, product_name, sku, date, reference, movement_type, 
-              quantity, balance_before, balance_after, notes, user_id, unit_symbol)
-             VALUES (?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-            [product_id, product[0]?.name || '', product[0]?.sku || '', reference, movement_type,
-             quantity, balanceBefore, balanceAfter, notes || `Manual adjustment (${movement_type === 'IN' ? 'add' : 'remove'})`,
-             req.user.id, unitSymbol]
-        );
-        
-        await connection.commit();
-        console.log('✅ Stock movement recorded, ID:', result[0].id);
-        res.json({ id: result[0].id, message: 'Stock movement recorded successfully', balance_after: balanceAfter });
-        
+      res.json(movements);
     } catch (error) {
-        await connection.rollback();
-        console.error('❌ Error recording stock movement:', error);
-        res.status(500).json({ error: error.message || 'Server error' });
-    } finally {
-        connection.release();
+      console.error("Error fetching bincard:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
+
+app.post(
+  "/api/stock-movements",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
+    try {
+      const {
+        product_id,
+        reference,
+        movement_type,
+        quantity,
+        notes,
+        invoice_number,
+      } = req.body;
+
+      console.log("=== STOCK MOVEMENT ===");
+      console.log("product_id:", product_id);
+      console.log("movement_type:", movement_type);
+      console.log("quantity:", quantity);
+
+      const balanceBefore = 0;
+
+      const adjustment = movement_type === "IN" ? quantity : -quantity;
+
+      const [product] = await req.db.query(
+        "SELECT name, sku, unit_id FROM products WHERE id = ?",
+        [product_id],
+      );
+
+      let unitSymbol = "";
+      if (product[0]?.unit_id) {
+        const [unit] = await req.db.query(
+          "SELECT symbol FROM units WHERE id = ?",
+          [product[0].unit_id],
+        );
+        unitSymbol = unit[0]?.symbol || "";
+      }
+
+      // Get the actual stock after update
+      const [afterStock] = await req.db.query(
+        "SELECT stock_quantity FROM products WHERE id = ?",
+        [product_id],
+      );
+      const balanceAfter = afterStock[0]?.stock_quantity || 0;
+
+      const [result] = await req.db.query(
+        `INSERT INTO stock_movements 
+             (product_id, product_name, sku, date, reference, movement_type, 
+              quantity, balance_before, balance_after, notes, user_id, unit_symbol, tenant_id)
+             VALUES (?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+        [
+          product_id,
+          product[0]?.name || "",
+          product[0]?.sku || "",
+          reference,
+          movement_type,
+          quantity,
+          balanceBefore,
+          balanceAfter,
+          notes ||
+            `Manual adjustment (${movement_type === "IN" ? "add" : "remove"})`,
+          req.user.id,
+          unitSymbol,
+          req.user.tenant_id,
+        ],
+      );
+
+      console.log("✅ Stock movement recorded, ID:", result[0].id);
+      res.json({
+        id: result[0].id,
+        message: "Stock movement recorded successfully",
+        balance_after: balanceAfter,
+      });
+    } catch (error) {
+      console.error("❌ Error recording stock movement:", error);
+      res.status(500).json({ error: error.message || "Server error" });
+    }
+  },
+);
 
 // ==================== NOTIFICATIONS ENDPOINTS ====================
 
