@@ -950,52 +950,75 @@ app.get('/api/sales', authenticateToken, async (req, res) => {
 
 // ==================== CATEGORIES ENDPOINTS ====================
 
-app.get('/api/categories', authenticateToken, async (req, res) => {
+app.get(
+  "/api/categories",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const [categories] = await pool.query('SELECT * FROM categories ORDER BY name');
-        res.json(categories);
+      const [categories] = await req.db.query(
+        "SELECT * FROM categories ORDER BY name",
+      );
+      res.json(categories);
     } catch (error) {
-        console.error('Error fetching categories:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error fetching categories:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
-app.post('/api/categories', authenticateToken, async (req, res) => {
+app.post(
+  "/api/categories",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const { name, description, isVatExempt, markupPercent } = req.body;
-        const markup = markupPercent != null && markupPercent !== '' ? parseFloat(markupPercent) : null;
-        const [result] = await pool.query(
-            'INSERT INTO categories (name, description, is_vat_exempt, markup_percent) VALUES (?, ?, ?, ?) RETURNING id',
-            [name, description, isVatExempt ? 1 : 0, markup]
-        );
-        res.json({ id: result[0].id, message: 'Category added successfully' });
+      const { name, description, isVatExempt, markupPercent } = req.body;
+      const markup =
+        markupPercent != null && markupPercent !== ""
+          ? parseFloat(markupPercent)
+          : null;
+      const [result] = await req.db.query(
+        "INSERT INTO categories (name, description, is_vat_exempt, markup_percent, tenant_id) VALUES (?, ?, ?, ?, ?) RETURNING id",
+        [name, description, isVatExempt ? 1 : 0, markup, req.user.tenant_id],
+      );
+      res.json({ id: result[0].id, message: "Category added successfully" });
     } catch (error) {
-        console.error('Error adding category:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error adding category:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
-app.put('/api/categories/:id', authenticateToken, async (req, res) => {
+app.put(
+  "/api/categories/:id",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const { name, description, isVatExempt, markupPercent } = req.body;
-        const markup = markupPercent != null && markupPercent !== '' ? parseFloat(markupPercent) : null;
+      const { name, description, isVatExempt, markupPercent } = req.body;
+      const markup =
+        markupPercent != null && markupPercent !== ""
+          ? parseFloat(markupPercent)
+          : null;
 
-        await pool.query(
-            `UPDATE categories SET 
+      await req.db.query(
+        `UPDATE categories SET 
                 name = ?, 
                 description = ?, 
                 is_vat_exempt = ?, 
                 markup_percent = ?
              WHERE id = ?`,
-            [name, description, isVatExempt ? 1 : 0, markup, req.params.id]
-        );
+        [name, description, isVatExempt ? 1 : 0, markup, req.params.id],
+      );
 
-        res.json({ message: 'Category updated successfully' });
+      res.json({ message: "Category updated successfully" });
     } catch (error) {
-        console.error('Error updating category:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error updating category:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
 // ==================== DISCOUNT PIN ENDPOINTS ====================
 
