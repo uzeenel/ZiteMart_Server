@@ -4188,10 +4188,14 @@ app.patch('/api/layaway/:id/cancel', authenticateToken, async (req, res) => {
 });
 
 // Get customer credit summary
-app.get('/api/customers/:id/credit-summary', authenticateToken, async (req, res) => {
+app.get(
+  "/api/customers/:id/credit-summary",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const [result] = await pool.query(
-            `SELECT 
+      const [result] = await req.db.query(
+        `SELECT 
                 c.id, c.name, c.credit_limit, c.current_balance,
                 (SELECT COALESCE(SUM(total), 0) FROM credit_sales 
                  WHERE customer_id = c.id AND status IN ('approved', 'goods_released', 'partially_paid')) as total_outstanding,
@@ -4201,34 +4205,40 @@ app.get('/api/customers/:id/credit-summary', authenticateToken, async (req, res)
                  JOIN credit_sales cs ON cp.credit_sale_id = cs.id 
                  WHERE cs.customer_id = c.id) as total_paid
              FROM customers c WHERE c.id = ?`,
-            [req.params.id]
-        );
-        res.json(result[0]);
+        [req.params.id],
+      );
+      res.json(result[0]);
     } catch (error) {
-        console.error('Error getting credit summary:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error getting credit summary:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
 // Get customer outstanding sales
-app.get('/api/customers/:id/outstanding-sales', authenticateToken, async (req, res) => {
+app.get(
+  "/api/customers/:id/outstanding-sales",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const [sales] = await pool.query(
-            `SELECT 
+      const [sales] = await req.db.query(
+        `SELECT 
                 cs.id, cs.invoice_number, cs.sale_date, cs.due_date, cs.total,
                 COALESCE((SELECT SUM(amount) FROM credit_payments WHERE credit_sale_id = cs.id), 0) as paid_amount,
-                (cs.total - COALESCE((SELECT SUM(amount) FROM credit_payments WHERE credit_sale_id = cs.id), 0)) as remaining_amount
+                COALESCE(cs.total - COALESCE((SELECT SUM(amount) FROM credit_payments WHERE credit_sale_id = cs.id), 0), 0) as remaining_amount
              FROM credit_sales cs 
              WHERE cs.customer_id = ? AND cs.status IN ('approved', 'goods_released', 'partially_paid')
              ORDER BY cs.due_date ASC`,
-            [req.params.id]
-        );
-        res.json(sales);
+        [req.params.id],
+      );
+      res.json(sales);
     } catch (error) {
-        console.error('Error getting outstanding sales:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error getting outstanding sales:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
 // ==================== BACKUP ENDPOINTS ====================
 
