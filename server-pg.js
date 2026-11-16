@@ -3048,93 +3048,137 @@ app.delete(
 
 // ==================== UNITS ENDPOINTS ====================
 
-app.get('/api/units', authenticateToken, async (req, res) => {
-    try {
-        const [units] = await pool.query(`
+app.get("/api/units", authenticateToken, setTenantContext, async (req, res) => {
+  try {
+    const [units] = await req.db.query(`
             SELECT u.*, bu.name as base_unit_name 
             FROM units u
             LEFT JOIN units bu ON u.base_unit_id = bu.id
             WHERE u.is_active = 1 
             ORDER BY u.name
         `);
-        res.json(units);
-    } catch (error) {
-        console.error('Error fetching units:', error);
-        res.status(500).json({ error: 'Server error' });
-    }
+    res.json(units);
+  } catch (error) {
+    console.error("Error fetching units:", error);
+    res.status(500).json({ error: "Server error" });
+  }
 });
 
-app.get('/api/units/:id', authenticateToken, async (req, res) => {
+app.get(
+  "/api/units/:id",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const [units] = await pool.query(`
+      const [units] = await req.db.query(
+        `
             SELECT u.*, bu.name as base_unit_name 
             FROM units u
             LEFT JOIN units bu ON u.base_unit_id = bu.id
             WHERE u.id = ?
-        `, [req.params.id]);
-        
-        if (units.length === 0) {
-            return res.status(404).json({ error: 'Unit not found' });
-        }
-        res.json(units[0]);
-    } catch (error) {
-        console.error('Error fetching unit:', error);
-        res.status(500).json({ error: 'Server error' });
-    }
-});
+        `,
+        [req.params.id],
+      );
 
-app.post('/api/units', authenticateToken, async (req, res) => {
+      if (units.length === 0) {
+        return res.status(404).json({ error: "Unit not found" });
+      }
+      res.json(units[0]);
+    } catch (error) {
+      console.error("Error fetching unit:", error);
+      res.status(500).json({ error: "Server error" });
+    }
+  },
+);
+
+app.post(
+  "/api/units",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const { name, symbol, baseUnitId, conversionFactor, isBaseUnit } = req.body;
-        
-        const [result] = await pool.query(
-            `INSERT INTO units (name, symbol, base_unit_id, conversion_factor, is_base_unit, is_active, created_at, updated_at) 
-             VALUES (?, ?, ?, ?, ?, 1, NOW(), NOW()) RETURNING id`,
-            [name, symbol, baseUnitId || null, conversionFactor || 1.0, isBaseUnit ? 1 : 0]
-        );
-        
-        const [newUnit] = await pool.query(`
+      const { name, symbol, baseUnitId, conversionFactor, isBaseUnit } =
+        req.body;
+
+      const [result] = await req.db.query(
+        `INSERT INTO units (name, symbol, base_unit_id, conversion_factor, is_base_unit, is_active, created_at, updated_at, tenant_id) 
+             VALUES (?, ?, ?, ?, ?, 1, NOW(), NOW(), ?) RETURNING id`,
+        [
+          name,
+          symbol,
+          baseUnitId || null,
+          conversionFactor || 1.0,
+          isBaseUnit ? 1 : 0,
+          req.user.tenant_id,
+        ],
+      );
+
+      const [newUnit] = await req.db.query(
+        `
             SELECT u.*, bu.name as base_unit_name 
             FROM units u
             LEFT JOIN units bu ON u.base_unit_id = bu.id
             WHERE u.id = ?
-        `, [result[0].id]);
-        
-        res.json(newUnit[0]);
-    } catch (error) {
-        console.error('Error adding unit:', error);
-        res.status(500).json({ error: 'Server error' });
-    }
-});
+        `,
+        [result[0].id],
+      );
 
-app.put('/api/units/:id', authenticateToken, async (req, res) => {
+      res.json(newUnit[0]);
+    } catch (error) {
+      console.error("Error adding unit:", error);
+      res.status(500).json({ error: "Server error" });
+    }
+  },
+);
+
+app.put(
+  "/api/units/:id",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const { name, symbol, baseUnitId, conversionFactor, isBaseUnit } = req.body;
-        
-        await pool.query(
-            `UPDATE units SET 
+      const { name, symbol, baseUnitId, conversionFactor, isBaseUnit } =
+        req.body;
+
+      await req.db.query(
+        `UPDATE units SET 
                 name = ?, symbol = ?, base_unit_id = ?, conversion_factor = ?,
                 is_base_unit = ?, updated_at = NOW()
              WHERE id = ?`,
-            [name, symbol, baseUnitId || null, conversionFactor || 1.0, isBaseUnit ? 1 : 0, req.params.id]
-        );
-        
-        res.json({ message: 'Unit updated successfully' });
-    } catch (error) {
-        console.error('Error updating unit:', error);
-        res.status(500).json({ error: 'Server error' });
-    }
-});
+        [
+          name,
+          symbol,
+          baseUnitId || null,
+          conversionFactor || 1.0,
+          isBaseUnit ? 1 : 0,
+          req.params.id,
+        ],
+      );
 
-app.delete('/api/units/:id', authenticateToken, async (req, res) => {
-    try {
-        await pool.query('UPDATE units SET is_active = 0 WHERE id = ?', [req.params.id]);
-        res.json({ message: 'Unit deleted successfully' });
+      res.json({ message: "Unit updated successfully" });
     } catch (error) {
-        console.error('Error deleting unit:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error updating unit:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
+
+app.delete(
+  "/api/units/:id",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
+    try {
+      await req.db.query("UPDATE units SET is_active = 0 WHERE id = ?", [
+        req.params.id,
+      ]);
+      res.json({ message: "Unit deleted successfully" });
+    } catch (error) {
+      console.error("Error deleting unit:", error);
+      res.status(500).json({ error: "Server error" });
+    }
+  },
+);
 
 // ==================== PURCHASE ORDERS ENDPOINTS ====================
 
