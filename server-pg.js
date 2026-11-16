@@ -1528,50 +1528,101 @@ app.delete(
 
 // ==================== CASH BOOK ENDPOINTS ====================
 
-app.get('/api/cash-book', authenticateToken, async (req, res) => {
+app.get(
+  "/api/cash-book",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const { start, end } = req.query;
-        const [transactions] = await pool.query('SELECT * FROM cash_transactions WHERE date BETWEEN ? AND ? ORDER BY date DESC', [start, end]);
-        res.json(transactions);
+      const { start, end } = req.query;
+      const [transactions] = await req.db.query(
+        "SELECT * FROM cash_transactions WHERE date BETWEEN ? AND ? ORDER BY date DESC",
+        [start, end],
+      );
+      res.json(transactions);
     } catch (error) {
-        console.error('Error fetching cash transactions:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error fetching cash transactions:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
-app.get('/api/cash-book/summary', authenticateToken, async (req, res) => {
+app.get(
+  "/api/cash-book/summary",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const { start, end } = req.query;
-        const [transactions] = await pool.query('SELECT * FROM cash_transactions WHERE date BETWEEN ? AND ?', [start, end]);
-        let cashIn = 0, cashOut = 0;
-        for (const t of transactions) t.type === 'cash_in' ? cashIn += t.amount : cashOut += t.amount;
-        res.json({ cashIn, cashOut, netCash: cashIn - cashOut, transactionCount: transactions.length });
+      const { start, end } = req.query;
+      const [transactions] = await req.db.query(
+        "SELECT * FROM cash_transactions WHERE date BETWEEN ? AND ?",
+        [start, end],
+      );
+      let cashIn = 0,
+        cashOut = 0;
+      for (const t of transactions) {
+        const amt = parseFloat(t.amount) || 0;
+        if (t.type === "cash_in") cashIn += amt;
+        else cashOut += amt;
+      }
+      res.json({
+        cashIn,
+        cashOut,
+        netCash: cashIn - cashOut,
+        transactionCount: transactions.length,
+      });
     } catch (error) {
-        console.error('Error fetching cash summary:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error fetching cash summary:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
-app.post('/api/cash-book', authenticateToken, async (req, res) => {
+app.post(
+  "/api/cash-book",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const { date, type, amount, category, description, reference, user_id } = req.body;
-        const [result] = await pool.query('INSERT INTO cash_transactions (date, type, amount, category, description, reference, user_id) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id', [date, type, amount, category, description, reference, user_id]);
-        res.json({ id: result[0].id, message: 'Transaction added successfully' });
+      const { date, type, amount, category, description, reference, user_id } =
+        req.body;
+      const [result] = await req.db.query(
+        "INSERT INTO cash_transactions (date, type, amount, category, description, reference, user_id, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+        [
+          date,
+          type,
+          amount,
+          category,
+          description,
+          reference,
+          user_id,
+          req.user.tenant_id,
+        ],
+      );
+      res.json({ id: result[0].id, message: "Transaction added successfully" });
     } catch (error) {
-        console.error('Error adding cash transaction:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error adding cash transaction:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
-app.delete('/api/cash-book/:id', authenticateToken, async (req, res) => {
+app.delete(
+  "/api/cash-book/:id",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        await pool.query('DELETE FROM cash_transactions WHERE id = ?', [req.params.id]);
-        res.json({ message: 'Transaction deleted successfully' });
+      await req.db.query("DELETE FROM cash_transactions WHERE id = ?", [
+        req.params.id,
+      ]);
+      res.json({ message: "Transaction deleted successfully" });
     } catch (error) {
-        console.error('Error deleting cash transaction:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error deleting cash transaction:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
 // ==================== BANK BOOK ENDPOINTS ====================
 
