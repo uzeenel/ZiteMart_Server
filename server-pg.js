@@ -2184,21 +2184,30 @@ app.delete(
 
 // ==================== SALES RETURNS ENDPOINTS ====================
 
-app.get('/api/sales-returns/items/:invoiceNumber', authenticateToken, async (req, res) => {
+app.get(
+  "/api/sales-returns/items/:invoiceNumber",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const { invoiceNumber } = req.params;
-        console.log('=== GET ITEMS FOR RETURN ===');
-        console.log('Invoice Number:', invoiceNumber);
-        
-        const [sales] = await pool.query('SELECT id FROM sales WHERE invoice_number = ?', [invoiceNumber]);
-        if (sales.length === 0) return res.status(404).json({ error: 'Sale not found' });
-        
-        const saleId = sales[0].id;
-        
-        // Nigeria VAT rate is 7.5%
-        const VAT_RATE = 0.075;
-        
-        const [items] = await pool.query(`
+      const { invoiceNumber } = req.params;
+      console.log("=== GET ITEMS FOR RETURN ===");
+      console.log("Invoice Number:", invoiceNumber);
+
+      const [sales] = await req.db.query(
+        "SELECT id FROM sales WHERE invoice_number= ?",
+        [invoiceNumber],
+      );
+      if (sales.length === 0)
+        return res.status(404).json({ error: "Sale not found" });
+
+      const saleId = sales[0].id;
+
+      // Nigeria VAT rate is 7.5%
+      const VAT_RATE = 0.075;
+
+      const [items] = await req.db.query(
+        `
             SELECT 
                 si.id as sale_item_id, 
                 si.product_id, 
@@ -2222,198 +2231,269 @@ app.get('/api/sales-returns/items/:invoiceNumber', authenticateToken, async (req
             WHERE si.sale_id = ?
             GROUP BY si.id, si.product_id, p.name, p.sku, p.category_name, si.quantity, si.unit_price, si.total
             HAVING (si.quantity - COALESCE(SUM(ri.quantity), 0)) > 0
-        `, [VAT_RATE, VAT_RATE, VAT_RATE, saleId]);
-        
-        console.log('Items found:', items.length);
-        if (items.length > 0) {
-            console.log('First item - ex-VAT:', items[0].unit_price_ex_vat);
-            console.log('First item - with VAT:', items[0].unit_price);
-        }
-        
-        res.json(items);
+        `,
+        [VAT_RATE, VAT_RATE, VAT_RATE, saleId],
+      );
+
+      console.log("Items found:", items.length);
+      if (items.length > 0) {
+        console.log("First item - ex-VAT:", items[0].unit_price_ex_vat);
+        console.log("First item - with VAT:", items[0].unit_price);
+      }
+
+      res.json(items);
     } catch (error) {
-        console.error('Error fetching sale items for return:', error);
-        res.status(500).json({ error: error.message });
+      console.error("Error fetching sale items for return:", error);
+      res.status(500).json({ error: error.message });
     }
-});
+  },
+);
 
-
-app.post('/api/sales-returns', authenticateToken, async (req, res) => {
-    const connection = await pool.connect();
+app.post(
+  "/api/sales-returns",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        await connection.beginTransaction();
-        const { saleId, invoiceNumber, items, reason, cashierId } = req.body;
-        const returnNumber = `RET-${Date.now()}`;
-        
-        console.log('=== CREATE RETURN ===');
-        console.log('Items received:', JSON.stringify(items, null, 2));
-        
-        // Calculate total refund - unit_price is now VAT-inclusive from GET
-        let totalRefund = 0;
-        for (const item of items) {
-            const qty = parseFloat(item.quantity) || 0;
-            const price = parseFloat(item.unit_price) || 0;
-            const subtotal = qty * price;
-            totalRefund += subtotal;
-            console.log(`Item: ${item.product_name}, Qty: ${qty}, Price (VAT-inclusive): ${price}, Subtotal: ${subtotal}`);
-        }
-        
-        console.log('Total Refund (VAT inclusive):', totalRefund);
-        
-        const [returnResult] = await connection.query(
-            `INSERT INTO sales_returns (return_number, sale_id, invoice_number, return_date, total_refund, reason, status, cashier_id) 
-             VALUES (?, ?, ?, NOW(), ?, ?, 'pending', ?) RETURNING id`,
-            [returnNumber, saleId, invoiceNumber, totalRefund, reason, cashierId]
+      const { saleId, invoiceNumber, items, reason, cashierId } = req.body;
+      const returnNumber = `RET-${Date.now()}`;
+
+      console.log("=== CREATE RETURN ===");
+      console.log("Items received:", JSON.stringify(items, null, 2));
+
+      // Calculate total refund - unit_price is now VAT-inclusive from GET
+      let totalRefund = 0;
+      for (const item of items) {
+        const qty = parseFloat(item.quantity) || 0;
+        const price = parseFloat(item.unit_price) || 0;
+        const subtotal = qty * price;
+        totalRefund += subtotal;
+        console.log(
+          `Item: ${item.product_name}, Qty: ${qty}, Price (VAT-inclusive): ${price}, Subtotal: ${subtotal}`,
         );
-        const returnId = returnResult[0].id;
-        
-        for (const item of items) {
-            await connection.query(
-                'INSERT INTO return_items (return_id, sale_item_id, product_id, product_name, sku, quantity, unit_price, total, reason) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                [returnId, item.sale_item_id, item.product_id, item.product_name, item.sku, item.quantity, item.unit_price, item.quantity * item.unit_price, item.reason || reason]
-            );
-        }
-        
-        await connection.commit();
-        res.json({ id: returnId, return_number: returnNumber, message: 'Return created successfully' });
-    } catch (error) {
-        await connection.rollback();
-        console.error('Error creating return:', error);
-        res.status(500).json({ error: 'Server error' });
-    } finally {
-        connection.release();
-    }
-});
+      }
 
-app.patch('/api/sales-returns/:id/complete', authenticateToken, async (req, res) => {
-    const connection = await pool.connect();
-    try {
-        await connection.beginTransaction();
-        
-        // Get return details
-        const [returns] = await connection.query('SELECT * FROM sales_returns WHERE id = ?', [req.params.id]);
-        if (returns.length === 0) {
-            return res.status(404).json({ error: 'Return not found' });
-        }
-        const returnData = returns[0];
-        
-        // Get the original sale
-        const [sales] = await connection.query('SELECT * FROM sales WHERE id = ?', [returnData.sale_id]);
-        if (sales.length === 0) {
-            return res.status(404).json({ error: 'Original sale not found' });
-        }
-        const sale = sales[0];
-        
-        // Get return items
-        const [items] = await connection.query('SELECT * FROM return_items WHERE return_id = ?', [req.params.id]);
-        
-        // Restock items
-        for (const item of items) {
-            await connection.query(
-                'UPDATE products SET stock_quantity = stock_quantity + ? WHERE id = ?',
-                [item.quantity, item.product_id]
-            );
-        }
-        
-        // Reverse payment based on original payment method
-        const refundAmount = returnData.total_refund;
-        const dateStr = new Date().toISOString().slice(0, 19).replace('T', ' ');
-        const invoiceNumber = sale.invoice_number;
-        
-        if (sale.payment_method === 'Cash') {
-            // Record refund as cash_out
-            await connection.query(
-                `INSERT INTO cash_transactions 
-                 (date, type, amount, category, description, reference, user_id) 
-                 VALUES (?, 'cash_out', ?, 'Sales Return', ?, ?, ?)`,
-                [dateStr, refundAmount, `Refund for sale #${invoiceNumber}`, `RET-${returnData.return_number}`, req.user.id]
-            );
-            console.log('✅ Cash refund recorded');
-        } else if (sale.payment_method === 'Card' || sale.payment_method === 'Transfer') {
-            // Get bank account used in the original sale
-            const [bankTx] = await connection.query(
-                'SELECT bank_account_id FROM bank_transactions WHERE reference = ? AND type = ? LIMIT 1',
-                [invoiceNumber, 'deposit']
-            );
-            const bankAccountId = bankTx.length > 0 ? bankTx[0].bank_account_id : null;
-            
-            await connection.query(
-                `INSERT INTO bank_transactions 
-                 (date, type, amount, account_name, bank_name, description, reference, user_id, bank_account_id) 
-                 VALUES (?, 'withdrawal', ?, 'Refund Account', ?, ?, ?, ?, ?)`,
-                [dateStr, refundAmount, 'Sales Refund', `Refund for sale #${invoiceNumber}`, `RET-${returnData.return_number}`, req.user.id, bankAccountId]
-            );
-            
-            if (bankAccountId) {
-                await connection.query(
-                    'UPDATE bank_accounts SET current_balance = current_balance - ? WHERE id = ?',
-                    [refundAmount, bankAccountId]
-                );
-                console.log(`✅ Bank account refund recorded: -${refundAmount}`);
-            }
-            console.log('✅ Bank refund recorded');
-        } else if (sale.payment_method === 'Credit') {
-            // Reverse credit sale
-            await connection.query(
-                'UPDATE customers SET current_balance = current_balance - ? WHERE id = ?',
-                [refundAmount, sale.customer_id]
-            );
-            console.log('✅ Customer credit reversed');
-        }
-        
-        // Update return status
-        await connection.query(
-            'UPDATE sales_returns SET status = ? WHERE id = ?',
-            ['completed', req.params.id]
+      console.log("Total Refund (VAT inclusive):", totalRefund);
+
+      const [returnResult] = await req.db.query(
+        `INSERT INTO sales_returns (return_number, sale_id, invoice_number, return_date, total_refund, reason, status, cashier_id, tenant_id) 
+             VALUES (?, ?, ?, NOW(), ?, ?, 'pending', ?, ?) RETURNING id`,
+        [
+          returnNumber,
+          saleId,
+          invoiceNumber,
+          totalRefund,
+          reason,
+          cashierId,
+          req.user.tenant_id,
+        ],
+      );
+      const returnId = returnResult[0].id;
+
+      for (const item of items) {
+        await req.db.query(
+          "INSERT INTO return_items (return_id, sale_item_id, product_id, product_name, sku, quantity, unit_price, total, reason, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+          [
+            returnId,
+            item.sale_item_id,
+            item.product_id,
+            item.product_name,
+            item.sku,
+            item.quantity,
+            item.unit_price,
+            item.quantity * item.unit_price,
+            item.reason || reason,
+            req.user.tenant_id,
+          ],
         );
-        
-        await connection.commit();
-        res.json({ message: 'Return completed successfully' });
-        
-    } catch (error) {
-        await connection.rollback();
-        console.error('Error completing return:', error);
-        res.status(500).json({ error: 'Server error' });
-    } finally {
-        connection.release();
-    }
-});
+      }
 
-app.get('/api/sales-returns', authenticateToken, async (req, res) => {
-    try {
-        const { start, end } = req.query;
-        let query = 'SELECT * FROM sales_returns';
-        let params = [];
-        if (start && end) {
-            query += ' WHERE return_date BETWEEN ? AND ?';
-            params = [start, end];
-        }
-        query += ' ORDER BY return_date DESC';
-        
-        const [returns] = await pool.query(query, params);
-        const returnsWithItems = [];
-        for (const ret of returns) {
-            const [items] = await pool.query('SELECT * FROM return_items WHERE return_id = ?', [ret.id]);
-            returnsWithItems.push({ ...ret, items });
-        }
-        res.json(returnsWithItems);
+      res.json({
+        id: returnId,
+        return_number: returnNumber,
+        message: "Return created successfully",
+      });
     } catch (error) {
-        console.error('Error fetching returns:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error creating return:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
-app.get('/api/sales-returns/:id', authenticateToken, async (req, res) => {
+app.patch(
+  "/api/sales-returns/:id/complete",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const [returns] = await pool.query('SELECT * FROM sales_returns WHERE id = ?', [req.params.id]);
-        if (returns.length === 0) return res.status(404).json({ error: 'Return not found' });
-        const [items] = await pool.query('SELECT * FROM return_items WHERE return_id = ?', [req.params.id]);
-        res.json({ ...returns[0], items });
+      // Get return details
+      const [returns] = await req.db.query(
+        "SELECT * FROM sales_returns WHERE id = ?",
+        [req.params.id],
+      );
+      if (returns.length === 0) {
+        return res.status(404).json({ error: "Return not found" });
+      }
+      const returnData = returns[0];
+
+      // Get the original sale
+      const [sales] = await req.db.query("SELECT * FROM sales WHERE id = ?", [
+        returnData.sale_id,
+      ]);
+      if (sales.length === 0) {
+        return res.status(404).json({ error: "Original sale not found" });
+      }
+      const sale = sales[0];
+
+      // Get return items
+      const [items] = await req.db.query(
+        "SELECT * FROM return_items WHERE return_id = ?",
+        [req.params.id],
+      );
+
+      // Restock items
+      for (const item of items) {
+        await req.db.query(
+          "UPDATE products SET stock_quantity = stock_quantity + ? WHERE id = ?",
+          [item.quantity, item.product_id],
+        );
+      }
+
+      // Reverse payment based on original payment method
+      const refundAmount = returnData.total_refund;
+      const dateStr = new Date().toISOString().slice(0, 19).replace("T", " ");
+      const invoiceNumber = sale.invoice_number;
+
+      if (sale.payment_method === "Cash") {
+        // Record refund as cash_out
+        await req.db.query(
+          `INSERT INTO cash_transactions 
+                 (date, type, amount, category, description, reference, user_id, tenant_id) 
+                 VALUES (?, 'cash_out', ?, 'Sales Return', ?, ?, ?, ?)`,
+          [
+            dateStr,
+            refundAmount,
+            `Refund for sale #${invoiceNumber}`,
+            `RET-${returnData.return_number}`,
+            req.user.id,
+            req.user.tenant_id,
+          ],
+        );
+        console.log("✅ Cash refund recorded");
+      } else if (
+        sale.payment_method === "Card" ||
+        sale.payment_method === "Transfer"
+      ) {
+        // Get bank account used in the original sale
+        const [bankTx] = await req.db.query(
+          "SELECT bank_account_id FROM bank_transactions WHERE reference = ? AND type = ? LIMIT 1",
+          [invoiceNumber, "deposit"],
+        );
+        const bankAccountId =
+          bankTx.length > 0 ? bankTx[0].bank_account_id : null;
+
+        await req.db.query(
+          `INSERT INTO bank_transactions 
+                 (date, type, amount, account_name, bank_name, description, reference, user_id, bank_account_id, tenant_id) 
+                 VALUES (?, 'withdrawal', ?, 'Refund Account', ?, ?, ?, ?, ?, ?)`,
+          [
+            dateStr,
+            refundAmount,
+            "Sales Refund",
+            `Refund for sale #${invoiceNumber}`,
+            `RET-${returnData.return_number}`,
+            req.user.id,
+            bankAccountId,
+            req.user.tenant_id,
+          ],
+        );
+
+        if (bankAccountId) {
+          await req.db.query(
+            "UPDATE bank_accounts SET current_balance = current_balance - ? WHERE id = ?",
+            [refundAmount, bankAccountId],
+          );
+          console.log(`✅ Bank account refund recorded: -${refundAmount}`);
+        }
+        console.log("✅ Bank refund recorded");
+      } else if (sale.payment_method === "Credit") {
+        // Reverse credit sale
+        await req.db.query(
+          "UPDATE customers SET current_balance = current_balance - ? WHERE id = ?",
+          [refundAmount, sale.customer_id],
+        );
+        console.log("✅ Customer credit reversed");
+      }
+
+      // Update return status
+      await req.db.query("UPDATE sales_returns SET status = ? WHERE id = ?", [
+        "completed",
+        req.params.id,
+      ]);
+
+      res.json({ message: "Return completed successfully" });
     } catch (error) {
-        console.error('Error fetching return:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error completing return:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
+
+app.get(
+  "/api/sales-returns",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
+    try {
+      const { start, end } = req.query;
+      let query = "SELECT * FROM sales_returns";
+      let params = [];
+      if (start && end) {
+        query += " WHERE return_date BETWEEN ? AND ?";
+        params = [start, end];
+      }
+      query += " ORDER BY return_date DESC";
+
+      const [returns] = await req.db.query(query, params);
+      const returnsWithItems = [];
+      for (const ret of returns) {
+        const [items] = await req.db.query(
+          "SELECT * FROM return_items WHERE return_id = ?",
+          [ret.id],
+        );
+        returnsWithItems.push({ ...ret, items });
+      }
+      res.json(returnsWithItems);
+    } catch (error) {
+      console.error("Error fetching returns:", error);
+      res.status(500).json({ error: "Server error" });
+    }
+  },
+);
+
+app.get(
+  "/api/sales-returns/:id",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
+    try {
+      const [returns] = await req.db.query(
+        "SELECT * FROM sales_returns WHERE id = ?",
+        [req.params.id],
+      );
+      if (returns.length === 0)
+        return res.status(404).json({ error: "Return not found" });
+      const [items] = await req.db.query(
+        "SELECT * FROM return_items WHERE return_id = ?",
+        [req.params.id],
+      );
+      res.json({ ...returns[0], items });
+    } catch (error) {
+      console.error("Error fetching return:", error);
+      res.status(500).json({ error: "Server error" });
+    }
+  },
+);
 
 // ==================== CREDIT SALES ENDPOINTS ====================
 
