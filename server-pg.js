@@ -1784,167 +1784,259 @@ if (!fs.existsSync(uploadDir)) {
 }
 
 // GET company
-app.get('/api/company', authenticateToken, async (req, res) => {
+app.get(
+  "/api/company",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const [company] = await pool.query('SELECT * FROM company LIMIT 1');
-        if (company.length === 0) return res.json({});
-        console.log('Company data:', company[0]);
-        res.json(company[0]);
+      const [company] = await req.db.query("SELECT * FROM company LIMIT 1");
+      if (company.length === 0) return res.json({});
+      console.log("Company data:", company[0]);
+      res.json(company[0]);
     } catch (error) {
-        console.error('Error fetching company:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error fetching company:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
 // POST/PUT company
-app.post('/api/company', authenticateToken, async (req, res) => {
+app.post(
+  "/api/company",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const { name, address, phone, email, taxId, stateId, autoCashBook, autoBankBook, defaultMarkupPercent, vatEnabled, vatRate } = req.body;
-        const [existing] = await pool.query('SELECT id FROM company LIMIT 1');
-        
-        const markup = defaultMarkupPercent != null ? parseFloat(defaultMarkupPercent) : 0;
-        
-        if (existing.length > 0) {
-                        await pool.query(
-                `UPDATE company SET 
+      const {
+        name,
+        address,
+        phone,
+        email,
+        taxId,
+        stateId,
+        autoCashBook,
+        autoBankBook,
+        defaultMarkupPercent,
+        vatEnabled,
+        vatRate,
+      } = req.body;
+      const [existing] = await req.db.query("SELECT id FROM company LIMIT 1");
+
+      const markup =
+        defaultMarkupPercent != null ? parseFloat(defaultMarkupPercent) : 0;
+
+      if (existing.length > 0) {
+        await req.db.query(
+          `UPDATE company SET 
                     name = ?, address = ?, phone = ?, email = ?, 
                     tax_id = ?, state_id = ?, auto_cash_book = ?, 
                     auto_bank_book = ?, default_markup_percent = ?,
                     vat_enabled = ?, vat_rate = ?, updated_at = NOW() 
                  WHERE id = ?`,
-                [name, address, phone, email, taxId, stateId, 
-                 autoCashBook ? 1 : 0, autoBankBook ? 1 : 0, markup,
-                 vatEnabled ? 1 : 0, vatRate != null ? parseFloat(vatRate) : 0,
-                 existing[0].id]
-            );
-            res.json({ id: existing[0].id, message: 'Company updated successfully' });
-        } else {
-                        const [result] = await pool.query(
-                `INSERT INTO company 
-                 (name, address, phone, email, tax_id, state_id, auto_cash_book, auto_bank_book, default_markup_percent, vat_enabled, vat_rate, created_at, updated_at) 
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW()) RETURNING id`,
-                [name, address, phone, email, taxId, stateId, 
-                 autoCashBook ? 1 : 0, autoBankBook ? 1 : 0, markup,
-                 vatEnabled ? 1 : 0, vatRate != null ? parseFloat(vatRate) : 0]
-            );
-            res.json({ id: result[0].id, message: 'Company created successfully' });
-        }
+          [
+            name,
+            address,
+            phone,
+            email,
+            taxId,
+            stateId,
+            autoCashBook ? 1 : 0,
+            autoBankBook ? 1 : 0,
+            markup,
+            vatEnabled ? 1 : 0,
+            vatRate != null ? parseFloat(vatRate) : 0,
+            existing[0].id,
+          ],
+        );
+        res.json({
+          id: existing[0].id,
+          message: "Company updated successfully",
+        });
+      } else {
+        const [result] = await req.db.query(
+          `INSERT INTO company 
+                 (name, address, phone, email, tax_id, state_id, auto_cash_book, auto_bank_book, default_markup_percent, vat_enabled, vat_rate, created_at, updated_at, tenant_id) 
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), ?) RETURNING id`,
+          [
+            name,
+            address,
+            phone,
+            email,
+            taxId,
+            stateId,
+            autoCashBook ? 1 : 0,
+            autoBankBook ? 1 : 0,
+            markup,
+            vatEnabled ? 1 : 0,
+            vatRate != null ? parseFloat(vatRate) : 0,
+            req.user.tenant_id,
+          ],
+        );
+        res.json({ id: result[0].id, message: "Company created successfully" });
+      }
     } catch (error) {
-        console.error('Error saving company:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error saving company:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
 // POST upload company logo
-app.post('/api/company/logo', authenticateToken, upload.single('logo'), async (req, res) => {
+app.post(
+  "/api/company/logo",
+  authenticateToken,
+  setTenantContext,
+  upload.single("logo"),
+  async (req, res) => {
     try {
-        console.log('=== LOGO UPLOAD ===');
-        console.log('File received:', req.file);
-        
-        if (!req.file) {
-            console.log('No file uploaded');
-            return res.status(400).json({ error: 'No file uploaded' });
+      console.log("=== LOGO UPLOAD ===");
+      console.log("File received:", req.file);
+
+      if (!req.file) {
+        console.log("No file uploaded");
+        return res.status(400).json({ error: "No file uploaded" });
+      }
+
+      const logoPath = `/uploads/logos/${req.file.filename}`;
+      console.log("Logo path:", logoPath);
+
+      // Check if company exists
+      const [existing] = await req.db.query(
+        "SELECT id, logo_path FROM company LIMIT 1",
+      );
+      console.log("Existing company:", existing.length > 0 ? "Yes" : "No");
+
+      if (existing.length > 0) {
+        // Delete old logo if exists
+        if (existing[0].logo_path) {
+          const oldPath = path.join(__dirname, "..", existing[0].logo_path);
+          console.log("Old logo path:", oldPath);
+          if (fs.existsSync(oldPath)) {
+            fs.unlinkSync(oldPath);
+            console.log("Deleted old logo");
+          }
         }
 
-        const logoPath = `/uploads/logos/${req.file.filename}`;
-        console.log('Logo path:', logoPath);
-        
-        // Check if company exists
-        const [existing] = await pool.query('SELECT id, logo_path FROM company LIMIT 1');
-        console.log('Existing company:', existing.length > 0 ? 'Yes' : 'No');
-        
-        if (existing.length > 0) {
-            // Delete old logo if exists
-            if (existing[0].logo_path) {
-                const oldPath = path.join(__dirname, '..', existing[0].logo_path);
-                console.log('Old logo path:', oldPath);
-                if (fs.existsSync(oldPath)) {
-                    fs.unlinkSync(oldPath);
-                    console.log('Deleted old logo');
-                }
-            }
-            
-            await pool.query(
-                'UPDATE company SET logo_path = ?, updated_at = NOW() WHERE id = ?',
-                [logoPath, existing[0].id]
-            );
-            console.log('Updated company with new logo');
-        } else {
-            // Create company entry first if it doesn't exist
-            console.log('Creating new company entry');
-            const [result] = await pool.query(
-                `INSERT INTO company (name, logo_path, created_at, updated_at) 
-                 VALUES ('Default Company', ?, NOW(), NOW()) RETURNING id`,
-                [logoPath]
-            );
-            console.log('Created company with ID:', result[0].id);
-        }
-        
-        res.json({ logoPath, message: 'Logo uploaded successfully' });
-        
+        await req.db.query(
+          "UPDATE company SET logo_path = ?, updated_at = NOW() WHERE id = ?",
+          [logoPath, existing[0].id],
+        );
+        console.log("Updated company with new logo");
+      } else {
+        // Create company entry first if it doesn't exist
+        console.log("Creating new company entry");
+        const [result] = await req.db.query(
+          `INSERT INTO company (name, logo_path, created_at, updated_at, tenant_id) 
+                 VALUES ('Default Company', ?, NOW(), NOW(), ?) RETURNING id`,
+          [logoPath, req.user.tenant_id],
+        );
+        console.log("Created company with ID:", result[0].id);
+      }
+
+      res.json({ logoPath, message: "Logo uploaded successfully" });
     } catch (error) {
-        console.error('Error uploading logo:', error);
-        console.error('Error details:', error.message);
-        res.status(500).json({ error: error.message });
+      console.error("Error uploading logo:", error);
+      console.error("Error details:", error.message);
+      res.status(500).json({ error: error.message });
     }
-});
-
+  },
+);
 
 // DELETE company logo
-app.delete('/api/company/logo', authenticateToken, async (req, res) => {
+app.delete(
+  "/api/company/logo",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const [existing] = await pool.query('SELECT id, logo_path FROM company LIMIT 1');
-        
-        if (existing.length > 0 && existing[0].logo_path) {
-            // Delete the file
-            const oldPath = path.join(__dirname, existing[0].logo_path);
-            if (fs.existsSync(oldPath)) {
-                fs.unlinkSync(oldPath);
-            }
-            
-            await pool.query(
-                'UPDATE company SET logo_path = NULL, updated_at = NOW() WHERE id = ?',
-                [existing[0].id]
-            );
+      const [existing] = await req.db.query(
+        "SELECT id, logo_path FROM company LIMIT 1",
+      );
+
+      if (existing.length > 0 && existing[0].logo_path) {
+        // Delete the file
+        const oldPath = path.join(__dirname, existing[0].logo_path);
+        if (fs.existsSync(oldPath)) {
+          fs.unlinkSync(oldPath);
         }
-        
-        res.json({ message: 'Logo deleted successfully' });
-        
+
+        await req.db.query(
+          "UPDATE company SET logo_path = NULL, updated_at = NOW() WHERE id = ?",
+          [existing[0].id],
+        );
+      }
+
+      res.json({ message: "Logo deleted successfully" });
     } catch (error) {
-        console.error('Error deleting logo:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error deleting logo:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 // PUT update company
-app.put('/api/company', authenticateToken, async (req, res) => {
+app.put(
+  "/api/company",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-            const { id, name, address, phone, email, taxId, stateId, autoCashBook, autoBankBook, defaultMarkupPercent, vatEnabled, vatRate } = req.body;
-        
-        const [existing] = await pool.query('SELECT id FROM company WHERE id = ?', [id]);
-        if (existing.length === 0) {
-            return res.status(404).json({ error: 'Company not found' });
-        }
-        
-        const markup = defaultMarkupPercent != null ? parseFloat(defaultMarkupPercent) : 0;
-        
-        await pool.query(
-            `UPDATE company SET 
+      const {
+        id,
+        name,
+        address,
+        phone,
+        email,
+        taxId,
+        stateId,
+        autoCashBook,
+        autoBankBook,
+        defaultMarkupPercent,
+        vatEnabled,
+        vatRate,
+      } = req.body;
+
+      const [existing] = await req.db.query(
+        "SELECT id FROM company WHERE id = ?",
+        [id],
+      );
+      if (existing.length === 0) {
+        return res.status(404).json({ error: "Company not found" });
+      }
+
+      const markup =
+        defaultMarkupPercent != null ? parseFloat(defaultMarkupPercent) : 0;
+
+      await req.db.query(
+        `UPDATE company SET 
                 name = ?, address = ?, phone = ?, email = ?, 
                 tax_id = ?, state_id = ?, auto_cash_book = ?, 
                 auto_bank_book = ?, default_markup_percent = ?,
                 vat_enabled = ?, vat_rate = ?, updated_at = NOW() 
              WHERE id = ?`,
-            [name, address, phone, email, taxId, stateId, 
-             autoCashBook ? 1 : 0, autoBankBook ? 1 : 0, markup,
-             vatEnabled ? 1 : 0, vatRate != null ? parseFloat(vatRate) : 0, id]
-        );
-        
-        res.json({ id: id, message: 'Company updated successfully' });
+        [
+          name,
+          address,
+          phone,
+          email,
+          taxId,
+          stateId,
+          autoCashBook ? 1 : 0,
+          autoBankBook ? 1 : 0,
+          markup,
+          vatEnabled ? 1 : 0,
+          vatRate != null ? parseFloat(vatRate) : 0,
+          id,
+        ],
+      );
+
+      res.json({ id: id, message: "Company updated successfully" });
     } catch (error) {
-        console.error('Error updating company:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error updating company:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
 
 // ==================== EXPENSES ENDPOINTS ====================
