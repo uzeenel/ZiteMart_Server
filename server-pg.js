@@ -1209,36 +1209,42 @@ app.get(
   },
 );
 
-app.post("/api/users", authenticateToken, async (req, res) => {
-  try {
-    if (req.user.role !== "admin")
-      return res.status(403).json({ error: "Access denied" });
-    const { username, password, fullName, role } = req.body;
-    const [existing] = await pool.query(
-      "SELECT id FROM users WHERE username = ?",
-      [username],
-    );
-    if (existing.length > 0)
-      return res.status(400).json({ error: "Username already exists" });
+app.post(
+  "/api/users",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
+    try {
+      if (req.user.role !== "admin")
+        return res.status(403).json({ error: "Access denied" });
+      const { username, password, fullName, role } = req.body;
+      const [existing] = await req.db.query(
+        "SELECT id FROM users WHERE username = ?",
+        [username],
+      );
+      if (existing.length > 0)
+        return res.status(400).json({ error: "Username already exists" });
 
-    const hashedPassword = await bcrypt.hash(password, 10);
+      const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Look up the role_id for the provided role string
-    const [roleRows] = await pool.query("SELECT id FROM roles WHERE name = ?", [
-      role,
-    ]);
-    const roleId = roleRows.length > 0 ? roleRows[0].id : null;
+      // Look up the role_id for the provided role string
+      const [roleRows] = await req.db.query(
+        "SELECT id FROM roles WHERE name = ?",
+        [role],
+      );
+      const roleId = roleRows.length > 0 ? roleRows[0].id : null;
 
-    const [result] = await pool.query(
-      "INSERT INTO users (username, password, full_name, role, role_id) VALUES (?, ?, ?, ?, ?) RETURNING id",
-      [username, hashedPassword, fullName, role, roleId],
-    );
-    res.json({ id: result[0].id, message: "User created successfully" });
-  } catch (error) {
-    console.error("Error creating user:", error);
-    res.status(500).json({ error: "Server error" });
-  }
-});
+      const [result] = await req.db.query(
+        "INSERT INTO users (username, password, full_name, role, role_id, tenant_id) VALUES (?, ?, ?, ?, ?, ?) RETURNING id",
+        [username, hashedPassword, fullName, role, roleId, req.user.tenant_id],
+      );
+      res.json({ id: result[0].id, message: "User created successfully" });
+    } catch (error) {
+      console.error("Error creating user:", error);
+      res.status(500).json({ error: "Server error" });
+    }
+  },
+);
 
 app.put('/api/users/:id', authenticateToken, async (req, res) => {
     try {
