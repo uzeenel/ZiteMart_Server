@@ -4445,98 +4445,108 @@ app.post(
   },
 );
 
-app.patch('/api/layaway/:id/complete', authenticateToken, async (req, res) => {
-    const connection = await pool.connect();
+app.patch(
+  "/api/layaway/:id/complete",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        await connection.beginTransaction();
-        
-        const [orders] = await connection.query(
-            'SELECT * FROM layaway_orders WHERE id = ?',
-            [req.params.id]
-        );
-        
-        if (orders.length === 0) {
-            return res.status(404).json({ error: 'Layaway order not found or already completed' });
-        }
-        
-        const order = orders[0];
-        
-        // Check if balance is zero
-        if (parseFloat(order.balance) > 0) {
-            return res.status(400).json({ error: 'Cannot complete: balance remains' });
-        }
-        
-        let items = [];
-        try {
-            items = typeof order.items === 'string' ? JSON.parse(order.items) : order.items;
-        } catch (e) {
-            console.error('Failed to parse items:', e);
-        }
-        
-        for (const item of items) {
-            // Update stock
-            await connection.query(
-                'UPDATE products SET stock_quantity = stock_quantity - ? WHERE id = ?',
-                [item.quantity, item.product_id]
-            );
-            
-            // Get product details
-            const [product] = await connection.query(
-                'SELECT name, sku, unit_id FROM products WHERE id = ?',
-                [item.product_id]
-            );
-            
-            // Record stock movement
-            await connection.query(
-                `INSERT INTO stock_movements 
-                (product_id, product_name, sku, date, reference, movement_type, 
-                quantity, balance_before, balance_after, notes, user_id, invoice_number)
-                VALUES (?, ?, ?, NOW(), ?, 'OUT', ?, ?, ?, ?, ?, ?)`,
-                [
-                    item.product_id,
-                    product[0]?.name || '',
-                    product[0]?.sku || '',
-                    `LAYAWAY-${order.invoice_number}`,
-                    item.quantity,
-                    0,
-                    0,
-                    `Layaway completed - ${order.invoice_number}`,
-                    req.user.id,
-                    order.invoice_number
-                ]
-            );
-        }
-        
-        await connection.query(
-            'UPDATE layaway_orders SET status = ?, updated_at = NOW() WHERE id = ?',
-            ['completed', req.params.id]
-        );
-        
-        await connection.commit();
-        res.json({ message: 'Layaway completed successfully' });
-        
-    } catch (error) {
-        await connection.rollback();
-        console.error('Error completing layaway:', error);
-        res.status(500).json({ error: error.message });
-    } finally {
-        connection.release();
-    }
-});
+      const [orders] = await req.db.query(
+        "SELECT * FROM layaway_orders WHERE id = ?",
+        [req.params.id],
+      );
 
-app.patch('/api/layaway/:id/cancel', authenticateToken, async (req, res) => {
-    try {
-        const { reason } = req.body;
-        await pool.query(
-            'UPDATE layaway_orders SET status = ?, notes = COALESCE(notes, \'\') || \' | Cancelled: \' || ?, updated_at = NOW() WHERE id = ?',
-            ['cancelled', reason, req.params.id]
+      if (orders.length === 0) {
+        return res
+          .status(404)
+          .json({ error: "Layaway order not found or already completed" });
+      }
+
+      const order = orders[0];
+
+      // Check if balance is zero
+      if (parseFloat(order.balance) > 0) {
+        return res
+          .status(400)
+          .json({ error: "Cannot complete: balance remains" });
+      }
+
+      let items = [];
+      try {
+        items =
+          typeof order.items === "string"
+            ? JSON.parse(order.items)
+            : order.items;
+      } catch (e) {
+        console.error("Failed to parse items:", e);
+      }
+
+      for (const item of items) {
+        // Update stock
+        await req.db.query(
+          "UPDATE products SET stock_quantity = stock_quantity - ? WHERE id = ?",
+          [item.quantity, item.product_id],
         );
-        res.json({ message: 'Layaway cancelled' });
+
+        // Get product details
+        const [product] = await req.db.query(
+          "SELECT name, sku, unit_id FROM products WHERE id = ?",
+          [item.product_id],
+        );
+
+        // Record stock movement
+        await req.db.query(
+          `INSERT INTO stock_movements 
+                (product_id, product_name, sku, date, reference, movement_type, 
+                quantity, balance_before, balance_after, notes, user_id, invoice_number, tenant_id)
+                VALUES (?, ?, ?, NOW(), ?, 'OUT', ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            item.product_id,
+            product[0]?.name || "",
+            product[0]?.sku || "",
+            `LAYAWAY-${order.invoice_number}`,
+            item.quantity,
+            0,
+            0,
+            `Layaway completed - ${order.invoice_number}`,
+            req.user.id,
+            order.invoice_number,
+            req.user.tenant_id,
+          ],
+        );
+      }
+
+      await req.db.query(
+        "UPDATE layaway_orders SET status = ?, updated_at = NOW() WHERE id = ?",
+        ["completed", req.params.id],
+      );
+
+      res.json({ message: "Layaway completed successfully" });
     } catch (error) {
-        console.error('Error cancelling layaway:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error completing layaway:", error);
+      res.status(500).json({ error: error.message });
     }
-});
+  },
+);
+
+app.patch(
+  "/api/layaway/:id/cancel",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
+    try {
+      const { reason } = req.body;
+      await req.db.query(
+        "UPDATE layaway_orders SET status = ?, notes = COALESCE(notes, '') || ' | Cancelled: ' || ?, updated_at = NOW() WHERE id = ?",
+        ["cancelled", reason, req.params.id],
+      );
+      res.json({ message: "Layaway cancelled" });
+    } catch (error) {
+      console.error("Error cancelling layaway:", error);
+      res.status(500).json({ error: "Server error" });
+    }
+  },
+);
 
 // Get customer credit summary
 app.get(
