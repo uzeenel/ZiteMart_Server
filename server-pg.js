@@ -1181,22 +1181,33 @@ app.get("/api/users", authenticateToken, setTenantContext, async (req, res) => {
 });
 
 
-app.get('/api/users/:id', authenticateToken, async (req, res) => {
+app.get(
+  "/api/users/:id",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        if (req.user.role !== 'admin' && req.user.id !== parseInt(req.params.id)) {
-            return res.status(403).json({ error: 'Access denied' });
-        }
-        
-        const [users] = await pool.query('SELECT id, username, full_name, role, is_active, last_login, created_at FROM users WHERE id = ?', [req.params.id]);
-        if (users.length === 0) {
-            return res.status(404).json({ error: 'User not found' });
-        }
-        res.json(users[0]);
+      if (
+        req.user.role !== "admin" &&
+        req.user.id !== parseInt(req.params.id)
+      ) {
+        return res.status(403).json({ error: "Access denied" });
+      }
+
+      const [users] = await req.db.query(
+        "SELECT id, username, full_name, role, is_active, last_login, created_at FROM users WHERE id = ?",
+        [req.params.id],
+      );
+      if (users.length === 0) {
+        return res.status(404).json({ error: "User not found" });
+      }
+      res.json(users[0]);
     } catch (error) {
-        console.error('Error fetching user:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error fetching user:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
 app.post("/api/users", authenticateToken, async (req, res) => {
   try {
