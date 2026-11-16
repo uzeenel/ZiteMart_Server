@@ -810,216 +810,256 @@ app.get(
 
 // ==================== SALES ENDPOINTS ====================
 
-app.post('/api/sales', authenticateToken, async (req, res) => {
-    const connection = await pool.connect();
+app.post(
+  "/api/sales",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        await connection.beginTransaction();
+      const {
+        cart,
+        subtotal,
+        tax,
+        total,
+        paymentMethod,
+        paidAmount,
+        cashierId,
+        customerId,
+        discountType,
+        discountValue,
+        discountPin,
+      } = req.body;
 
-        const {
-            cart, subtotal, tax, total, paymentMethod, paidAmount, cashierId, customerId,
-            discountType, discountValue, discountPin
-        } = req.body;
+      const invoiceNumber = `INV-${Date.now()}`;
 
-        const invoiceNumber = `INV-${Date.now()}`;
+      // ===== DISCOUNT HANDLING =====
+      let discountAmount = 0;
+      let discountPinId = null;
 
-        // ===== DISCOUNT HANDLING =====
-        let discountAmount = 0;
-        let discountPinId = null;
+      const hasDiscount =
+        discountType && discountValue && parseFloat(discountValue) > 0;
 
-        const hasDiscount = discountType && discountValue && parseFloat(discountValue) > 0;
-
-        if (hasDiscount) {
-            if (!discountPin) {
-                await connection.rollback();
-                return res.status(400).json({ error: 'Discount PIN required' });
-            }
-
-            const [pinRows] = await connection.query(
-                'SELECT * FROM discount_pins WHERE pin = ? FOR UPDATE',
-                [discountPin]
-            );
-
-            if (pinRows.length === 0) {
-                await connection.rollback();
-                return res.status(400).json({ error: 'Invalid discount PIN' });
-            }
-
-            const pinRow = pinRows[0];
-
-            if (pinRow.used_at) {
-                await connection.rollback();
-                return res.status(400).json({ error: 'Discount PIN already used' });
-            }
-
-            const requestedValue = parseFloat(discountValue);
-            if (discountType === 'percent') {
-                discountAmount = parseFloat((subtotal * (requestedValue / 100)).toFixed(2));
-            } else {
-                discountAmount = parseFloat(requestedValue.toFixed(2));
-            }
-
-            const pinMaxValue = parseFloat(pinRow.max_discount_value);
-            let pinMaxAmount;
-            if (pinRow.max_discount_type === 'percent') {
-                pinMaxAmount = parseFloat((subtotal * (pinMaxValue / 100)).toFixed(2));
-            } else {
-                pinMaxAmount = pinMaxValue;
-            }
-
-            if (discountAmount > pinMaxAmount) {
-                await connection.rollback();
-                return res.status(400).json({
-                    error: `Discount exceeds PIN limit`
-                });
-            }
-
-            if (discountAmount > subtotal) {
-                await connection.rollback();
-                return res.status(400).json({ error: 'Discount cannot exceed subtotal' });
-            }
-
-            discountPinId = pinRow.id;
+      if (hasDiscount) {
+        if (!discountPin) {
+          return res.status(400).json({ error: "Discount PIN required" });
         }
 
-        const finalTotal = parseFloat((subtotal - discountAmount + (tax || 0)).toFixed(2));
-        const changeAmount = paidAmount - finalTotal;
-
-
-        // ===== INSERT SALE =====
-        const [saleResult] = await connection.query(
-            `INSERT INTO sales 
-             (invoice_number, sale_date, customer_id, subtotal, tax, total, 
-              payment_method, paid_amount, change_amount, cashier_id, status,
-              discount_type, discount_value, discount_amount, discount_pin_id) 
-             VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?) RETURNING id`,
-            [
-                invoiceNumber, customerId || null, subtotal, tax || 0, finalTotal,
-                paymentMethod, paidAmount, changeAmount > 0 ? changeAmount : 0, cashierId,
-                hasDiscount ? discountType : null,
-                hasDiscount ? parseFloat(discountValue) : null,
-                discountAmount,
-                discountPinId
-            ]
+        const [pinRows] = await req.db.query(
+          "SELECT * FROM discount_pins WHERE pin = ? FOR UPDATE",
+          [discountPin],
         );
 
-        const saleId = saleResult[0].id;
+        if (pinRows.length === 0) {
+          return res.status(400).json({ error: "Invalid discount PIN" });
+        }
 
-        // ===== MARK PIN USED =====
-        if (discountPinId) {
-            await connection.query(
-                `UPDATE discount_pins 
+        const pinRow = pinRows[0];
+
+        if (pinRow.used_at) {
+          return res.status(400).json({ error: "Discount PIN already used" });
+        }
+
+        const requestedValue = parseFloat(discountValue);
+        if (discountType === "percent") {
+          discountAmount = parseFloat(
+            (subtotal * (requestedValue / 100)).toFixed(2),
+          );
+        } else {
+          discountAmount = parseFloat(requestedValue.toFixed(2));
+        }
+
+        const pinMaxValue = parseFloat(pinRow.max_discount_value);
+        let pinMaxAmount;
+        if (pinRow.max_discount_type === "percent") {
+          pinMaxAmount = parseFloat(
+            (subtotal * (pinMaxValue / 100)).toFixed(2),
+          );
+        } else {
+          pinMaxAmount = pinMaxValue;
+        }
+
+        if (discountAmount > pinMaxAmount) {
+          return res.status(400).json({
+            error: `Discount exceeds PIN limit`,
+          });
+        }
+
+        if (discountAmount > subtotal) {
+          return res
+            .status(400)
+            .json({ error: "Discount cannot exceed subtotal" });
+        }
+
+        discountPinId = pinRow.id;
+      }
+
+      const finalTotal = parseFloat(
+        (subtotal - discountAmount + (tax || 0)).toFixed(2),
+      );
+      const changeAmount = paidAmount - finalTotal;
+
+      // ===== INSERT SALE =====
+      const [saleResult] = await req.db.query(
+        `INSERT INTO sales 
+             (invoice_number, sale_date, customer_id, subtotal, tax, total, 
+              payment_method, paid_amount, change_amount, cashier_id, status,
+              discount_type, discount_value, discount_amount, discount_pin_id, tenant_id) 
+             VALUES (?, NOW(), ?, ?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, ?, ?, ?) RETURNING id`,
+        [
+          invoiceNumber,
+          customerId || null,
+          subtotal,
+          tax || 0,
+          finalTotal,
+          paymentMethod,
+          paidAmount,
+          changeAmount > 0 ? changeAmount : 0,
+          cashierId,
+          hasDiscount ? discountType : null,
+          hasDiscount ? parseFloat(discountValue) : null,
+          discountAmount,
+          discountPinId,
+          req.user.tenant_id,
+        ],
+      );
+
+      const saleId = saleResult[0].id;
+
+      // ===== MARK PIN USED =====
+      if (discountPinId) {
+        await req.db.query(
+          `UPDATE discount_pins 
                  SET used_at = NOW(), used_by = ?, sale_id = ?, discount_applied = ? 
                  WHERE id = ?`,
-                [cashierId, saleId, discountAmount, discountPinId]
-            );
-        }
+          [cashierId, saleId, discountAmount, discountPinId],
+        );
+      }
 
-        // ===== PROCESS CART ITEMS =====
-        for (const item of cart) {
-            await connection.query(
-                `INSERT INTO sale_items (sale_id, product_id, quantity, unit_price, total, is_vat_exempt) 
-                 VALUES (?, ?, ?, ?, ?, ?)`,
-                [saleId, item.product.id, item.quantity, item.product.sellingPrice, item.subtotal, item.product.isVatExempt ? 1 : 0]
-            );
-
-            const [currentStock] = await connection.query(
-                'SELECT stock_quantity FROM products WHERE id = ?',
-                [item.product.id]
-            );
-            const balanceBefore = parseFloat(currentStock[0]?.stock_quantity) || 0;
-
-            if (paymentMethod !== 'Layaway') {
-                await connection.query(
-                    'UPDATE products SET stock_quantity = stock_quantity - ? WHERE id = ?',
-                    [item.quantity, item.product.id]
-                );
-            }
-
-            const balanceAfter = balanceBefore - item.quantity;
-
-            const [product] = await connection.query(
-                'SELECT name, sku, unit_id FROM products WHERE id = ?',
-                [item.product.id]
-            );
-
-            let unitSymbol = '';
-            if (product[0]?.unit_id) {
-                const [unit] = await connection.query(
-                    'SELECT symbol FROM units WHERE id = ?',
-                    [product[0].unit_id]
-                );
-                unitSymbol = unit[0]?.symbol || '';
-            }
-
-            await connection.query(
-                `INSERT INTO stock_movements 
-                 (product_id, product_name, sku, date, reference, movement_type, 
-                  quantity, balance_before, balance_after, notes, user_id, unit_symbol, invoice_number)
-                 VALUES (?, ?, ?, NOW(), ?, 'OUT', ?, ?, ?, ?, ?, ?, ?)`,
-                [
-                    item.product.id,
-                    product[0]?.name || '',
-                    product[0]?.sku || '',
-                    `SALE-${saleId}`,
-                    item.quantity,
-                    balanceBefore,
-                    balanceAfter,
-                    `Sale #${invoiceNumber}${discountAmount > 0 ? ` (discount: ${discountAmount})` : ''}`,
-                    cashierId,
-                    unitSymbol,
-                    invoiceNumber
-                ]
-            );
-        }
-
-        // ===== CASH / BANK TRANSACTIONS =====
-        const dateStr = new Date().toISOString().slice(0, 19).replace('T', ' ');
-
-        if (paymentMethod === 'Cash') {
-            await connection.query(
-                `INSERT INTO cash_transactions (date, type, amount, category, description, reference, user_id) 
-                 VALUES (?, 'cash_in', ?, 'Sales Income', ?, ?, ?)`,
-                [dateStr, finalTotal, `Cash sale #${invoiceNumber}`, invoiceNumber, cashierId]
-            );
-        } else if (paymentMethod === 'Card' || paymentMethod === 'Transfer') {
-            const [accounts] = await connection.query(
-                'SELECT id FROM bank_accounts WHERE is_active = 1 LIMIT 1'
-            );
-            const bankAccountId = accounts.length > 0 ? accounts[0].id : null;
-
-            await connection.query(
-                `INSERT INTO bank_transactions (date, type, amount, account_name, bank_name, description, reference, user_id, bank_account_id) 
-                 VALUES (?, 'deposit', ?, 'Sales Account', ?, ?, ?, ?, ?)`,
-                [dateStr, finalTotal, paymentMethod === 'Card' ? 'Card Payments' : 'Transfer Payments',
-                 `${paymentMethod} sale #${invoiceNumber}`, invoiceNumber, cashierId, bankAccountId]
-            );
-
-            if (bankAccountId) {
-                await connection.query(
-                    'UPDATE bank_accounts SET current_balance = current_balance + ? WHERE id = ?',
-                    [finalTotal, bankAccountId]
-                );
-            }
-        }
-
-        await connection.commit();
-
-        res.json({
-            invoiceNumber,
-            change: changeAmount > 0 ? changeAmount : 0,
+      // ===== PROCESS CART ITEMS =====
+      for (const item of cart) {
+        await req.db.query(
+          `INSERT INTO sale_items (sale_id, product_id, quantity, unit_price,total, is_vat_exempt, tenant_id) 
+                 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [
             saleId,
-            discountAmount,
-            finalTotal
-        });
+            item.product.id,
+            item.quantity,
+            item.product.sellingPrice,
+            item.subtotal,
+            item.product.isVatExempt ? 1 : 0,
+            req.user.tenant_id,
+          ],
+        );
 
+        const [currentStock] = await req.db.query(
+          "SELECT stock_quantity FROM products WHERE id = ?",
+          [item.product.id],
+        );
+        const balanceBefore = parseFloat(currentStock[0]?.stock_quantity) || 0;
+
+        if (paymentMethod !== "Layaway") {
+          await req.db.query(
+            "UPDATE products SET stock_quantity = stock_quantity - ? WHERE id = ?",
+            [item.quantity, item.product.id],
+          );
+        }
+
+        const balanceAfter = balanceBefore - item.quantity;
+
+        const [product] = await req.db.query(
+          "SELECT name, sku, unit_id FROM products WHERE id = ?",
+          [item.product.id],
+        );
+
+        let unitSymbol = "";
+        if (product[0]?.unit_id) {
+          const [unit] = await req.db.query(
+            "SELECT symbol FROM units WHERE id = ?",
+            [product[0].unit_id],
+          );
+          unitSymbol = unit[0]?.symbol || "";
+        }
+
+        await req.db.query(
+          `INSERT INTO stock_movements 
+                 (product_id, product_name, sku, date, reference, movement_type, 
+                  quantity, balance_before, balance_after, notes, user_id, unit_symbol, invoice_number, tenant_id)
+                 VALUES (?, ?, ?, NOW(), ?, 'OUT', ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            item.product.id,
+            product[0]?.name || "",
+            product[0]?.sku || "",
+            `SALE-${saleId}`,
+            item.quantity,
+            balanceBefore,
+            balanceAfter,
+            `Sale #${invoiceNumber}${discountAmount > 0 ? ` (discount: ${discountAmount})` : ""}`,
+            cashierId,
+            unitSymbol,
+            invoiceNumber,
+            req.user.tenant_id,
+          ],
+        );
+      }
+
+      // ===== CASH / BANK TRANSACTIONS =====
+      const dateStr = new Date().toISOString().slice(0, 19).replace("T", " ");
+
+      if (paymentMethod === "Cash") {
+        await req.db.query(
+          `INSERT INTO cash_transactions (date, type, amount, category, description, reference, user_id, tenant_id) 
+                 VALUES (?, 'cash_in', ?, 'Sales Income', ?, ?, ?, ?)`,
+          [
+            dateStr,
+            finalTotal,
+            `Cash sale #${invoiceNumber}`,
+            invoiceNumber,
+            cashierId,
+            req.user.tenant_id,
+          ],
+        );
+      } else if (paymentMethod === "Card" || paymentMethod === "Transfer") {
+        const [accounts] = await req.db.query(
+          "SELECT id FROM bank_accounts WHERE is_active = 1 LIMIT 1",
+        );
+        const bankAccountId = accounts.length > 0 ? accounts[0].id : null;
+
+        await req.db.query(
+          `INSERT INTO bank_transactions (date, type, amount, account_name, bank_name, description, reference, user_id, bank_account_id, tenant_id) 
+                 VALUES (?, 'deposit', ?, 'Sales Account', ?, ?, ?, ?, ?, ?)`,
+          [
+            dateStr,
+            finalTotal,
+            paymentMethod === "Card" ? "Card Payments" : "Transfer Payments",
+            `${paymentMethod} sale #${invoiceNumber}`,
+            invoiceNumber,
+            cashierId,
+            bankAccountId,
+            req.user.tenant_id,
+          ],
+        );
+
+        if (bankAccountId) {
+          await req.db.query(
+            "UPDATE bank_accounts SET current_balance = current_balance + ? WHERE id = ?",
+            [finalTotal, bankAccountId],
+          );
+        }
+      }
+
+      res.json({
+        invoiceNumber,
+        change: changeAmount > 0 ? changeAmount : 0,
+        saleId,
+        discountAmount,
+        finalTotal,
+      });
     } catch (error) {
-        await connection.rollback();
-        console.error('ERROR SAVING SALE:', error);
-        res.status(500).json({ error: error.message });
-    } finally {
-        connection.release();
+      console.error("ERROR SAVING SALE:", error);
+      res.status(500).json({ error: error.message });
     }
-});
+  },
+);
 
 
 app.get('/api/sales/:id', authenticateToken, async (req, res) => {
