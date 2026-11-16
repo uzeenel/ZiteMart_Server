@@ -24,12 +24,14 @@ app.use(express.json());
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Database connection
+// Database connection — credentials come from env only (.env.pg locally,
+// Render env vars in cloud). No hardcoded fallbacks for user/password.
 const _pgPool = new Pool({
-    host: 'ep-plain-bar-b2yxkbf7.c-6.eu-central-1.aws.neon.tech',
-    user: 'neondb_owner',
-    password: 'npg_hHEvDUJ0Twt6',
-    database: 'neondb',
-    port: 5432,
+    host:     process.env.DB_HOST,
+    user:     process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    database: process.env.DB_NAME,
+    port:     process.env.DB_PORT ? parseInt(process.env.DB_PORT) : 5432,
     ssl: { rejectUnauthorized: false },
     max: 10,
     idleTimeoutMillis: 30000,
