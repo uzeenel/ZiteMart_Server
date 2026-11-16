@@ -1166,16 +1166,20 @@ app.get('/api/discount-pins', authenticateToken, async (req, res) => {
 
 // ==================== USERS ENDPOINTS ====================
 
-app.get('/api/users', authenticateToken, async (req, res) => {
-    try {
-        if (req.user.role !== 'admin') return res.status(403).json({ error: 'Access denied' });
-        const [users] = await pool.query('SELECT id, username, full_name, role, is_active, last_login, created_at FROM users ORDER BY created_at DESC');
-        res.json(users);
-    } catch (error) {
-        console.error('Error fetching users:', error);
-        res.status(500).json({ error: 'Server error' });
-    }
+app.get("/api/users", authenticateToken, setTenantContext, async (req, res) => {
+  try {
+    if (req.user.role !== "admin")
+      return res.status(403).json({ error: "Accessdenied" });
+    const [users] = await req.db.query(
+      "SELECT id, username, full_name, role, is_active, last_login, created_at FROM users ORDER BY created_at DESC",
+    );
+    res.json(users);
+  } catch (error) {
+    console.error("Error fetching users:", error);
+    res.status(500).json({ error: "Server error" });
+  }
 });
+
 
 app.get('/api/users/:id', authenticateToken, async (req, res) => {
     try {
