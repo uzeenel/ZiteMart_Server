@@ -3857,54 +3857,74 @@ app.patch(
 
 // ==================== BANKS ENDPOINTS ====================
 
-app.get('/api/banks', authenticateToken, async (req, res) => {
-    try {
-        const [banks] = await pool.query('SELECT * FROM banks WHERE is_active = 1 ORDER BY name');
-        res.json(banks);
-    } catch (error) {
-        console.error('Error fetching banks:', error);
-        res.status(500).json({ error: 'Server error' });
-    }
+app.get("/api/banks", authenticateToken, setTenantContext, async (req, res) => {
+  try {
+    const [banks] = await req.db.query(
+      "SELECT * FROM banks WHERE is_active = 1 ORDER BY name",
+    );
+    res.json(banks);
+  } catch (error) {
+    console.error("Error fetching banks:", error);
+    res.status(500).json({ error: "Server error" });
+  }
 });
 
-app.post('/api/banks', authenticateToken, async (req, res) => {
+app.post(
+  "/api/banks",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const { name, code } = req.body;
-        const [result] = await pool.query(
-            'INSERT INTO banks (name, code, is_active, created_at) VALUES (?, ?, 1, NOW()) RETURNING id',
-            [name, code]
-        );
-        const [newBank] = await pool.query('SELECT * FROM banks WHERE id = ?', [result[0].id]);
-        res.json(newBank[0]);
+      const { name, code } = req.body;
+      const [result] = await req.db.query(
+        "INSERT INTO banks (name, code, is_active, created_at, tenant_id) VALUES (?, ?, 1, NOW(), ?) RETURNING id",
+        [name, code, req.user.tenant_id],
+      );
+      const [newBank] = await req.db.query("SELECT * FROM banks WHERE id = ?", [
+        result[0].id,
+      ]);
+      res.json(newBank[0]);
     } catch (error) {
-        console.error('Error adding bank:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error adding bank:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
-app.put('/api/banks/:id', authenticateToken, async (req, res) => {
+app.put(
+  "/api/banks/:id",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const { name, code } = req.body;
-        await pool.query(
-            'UPDATE banks SET name = ?, code = ? WHERE id = ?',
-            [name, code, req.params.id]
-        );
-        res.json({ message: 'Bank updated successfully' });
+      const { name, code } = req.body;
+      await req.db.query("UPDATE banks SET name = ?, code = ? WHERE id = ?", [
+        name,
+        code,
+        req.params.id,
+      ]);
+      res.json({ message: "Bank updated successfully" });
     } catch (error) {
-        console.error('Error updating bank:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error updating bank:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
-app.delete('/api/banks/:id', authenticateToken, async (req, res) => {
+app.delete(
+  "/api/banks/:id",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        await pool.query('DELETE FROM banks WHERE id = ?', [req.params.id]);
-        res.json({ message: 'Bank deleted successfully' });
+      await req.db.query("DELETE FROM banks WHERE id = ?", [req.params.id]);
+      res.json({ message: "Bank deleted successfully" });
     } catch (error) {
-        console.error('Error deleting bank:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error deleting bank:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
 // ==================== BANK ACCOUNTS ENDPOINTS ====================
 
