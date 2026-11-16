@@ -190,12 +190,19 @@ app.get('/api/test', authenticateToken, (req, res) => {
 
 // ==================== PRODUCT ENDPOINTS ====================
 
-app.get('/api/products', authenticateToken, async (req, res) => {
+app.get(
+  "/api/products",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const [companyRows] = await pool.query('SELECT default_markup_percent FROM company LIMIT 1');
-        const globalMarkup = parseFloat(companyRows[0]?.default_markup_percent) || 0;
+      const [companyRows] = await req.db.query(
+        "SELECT default_markup_percent FROM company LIMIT 1",
+      );
+      const globalMarkup =
+        parseFloat(companyRows[0]?.default_markup_percent) || 0;
 
-        const [products] = await pool.query(`
+      const [products] = await req.db.query(`
             SELECT 
                 p.*, 
                 c.name as linked_category_name, 
@@ -209,20 +216,23 @@ app.get('/api/products', authenticateToken, async (req, res) => {
             ORDER BY p.name
         `);
 
-        const enriched = products.map(p => ({
-            ...p,
-            effective_markup_percent:
-                p.markup_percent != null ? parseFloat(p.markup_percent) :
-                p.category_markup != null ? parseFloat(p.category_markup) :
-                globalMarkup
-        }));
+      const enriched = products.map((p) => ({
+        ...p,
+        effective_markup_percent:
+          p.markup_percent != null
+            ? parseFloat(p.markup_percent)
+            : p.category_markup != null
+              ? parseFloat(p.category_markup)
+              : globalMarkup,
+      }));
 
-        res.json(enriched);
+      res.json(enriched);
     } catch (error) {
-        console.error('Error fetching products:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error fetching products:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
 app.get('/api/products/next-sku', async (req, res) => {
   const { category_id, name } = req.query;
