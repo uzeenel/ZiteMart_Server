@@ -4603,64 +4603,99 @@ app.get(
 
 // ==================== BACKUP ENDPOINTS ====================
 
-app.get('/api/backup/export', authenticateToken, async (req, res) => {
+app.get(
+  "/api/backup/export",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        console.log('✅ BACKUP EXPORT CALLED');
-        console.log('=== BACKUP EXPORT ===');
-        
-        // Get all tables and export as SQL
-        const [tables] = await pool.query(
-            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'"
-        );
-        let sql = '';
-        
-        for (const table of tables) {
-            const tableName = table.table_name;
-            const [rows] = await pool.query(`SELECT * FROM "${tableName}"`);
-            
-            if (rows.length > 0) {
-                const columns = Object.keys(rows[0]).map(c => `"${c}"`).join(', ');
-                for (const row of rows) {
-                    const values = Object.values(row).map(v => {
-                        if (v === null || v === undefined) return 'NULL';
-                        if (typeof v === 'number') return String(v);
-                        if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE';
-                        if (v instanceof Date) return `'${v.toISOString()}'`;
-                        if (typeof v === 'object') return `'${JSON.stringify(v).replace(/'/g, "''")}'`;
-                        return `'${String(v).replace(/'/g, "''")}'`;
-                    }).join(', ');
-                    sql += `INSERT INTO "${tableName}" (${columns}) VALUES (${values});\n`;
-                }
-            }
+      console.log("✅ BACKUP EXPORT CALLED");
+      console.log("=== BACKUP EXPORT === tenant:", req.user.tenant_id);
+
+      // Global tables that must NOT be exported per-tenant:
+      // - tenants: contains other tenants' account info
+      // - permissions: shared RBAC catalog
+      // - states: shared Nigerian states reference
+      const GLOBAL_TABLES = ["tenants", "permissions", "states"];
+
+      // Get all tables, filter out globals
+      const [tables] = await req.db.query(
+        "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_type = 'BASE TABLE'",
+      );
+      const tenantTables = tables.filter(
+        (t) => !GLOBAL_TABLES.includes(t.table_name),
+      );
+
+      let sql = `-- ZiteMart backup for tenant ${req.user.tenant_id}\n-- Generated ${new Date().toISOString()}\n\n`;
+
+      for (const table of tenantTables) {
+        const tableName = table.table_name;
+        // req.db + RLS scopes each SELECT to the current tenant
+        const [rows] = await req.db.query(`SELECT * FROM "${tableName}"`);
+
+        if (rows.length > 0) {
+          const columns = Object.keys(rows[0])
+            .map((c) => `"${c}"`)
+            .join(", ");
+          for (const row of rows) {
+            const values = Object.values(row)
+              .map((v) => {
+                if (v === null || v === undefined) return "NULL";
+                if (typeof v === "number") return String(v);
+                if (typeof v === "boolean") return v ? "TRUE" : "FALSE";
+                if (v instanceof Date) return `'${v.toISOString()}'`;
+                if (typeof v === "object")
+                  return `'${JSON.stringify(v).replace(/'/g, "''")}'`;
+                return `'${String(v).replace(/'/g, "''")}'`;
+              })
+              .join(", ");
+            sql += `INSERT INTO "${tableName}" (${columns}) VALUES (${values});\n`;
+          }
         }
-        
-        res.setHeader('Content-Type', 'application/sql');
-        res.setHeader('Content-Disposition', 'attachment; filename=zitemart_backup.sql');
-        res.send(sql);
-    } catch (error) {
-        console.error('Error exporting database:', error);
-        res.status(500).json({ error: error.message });
-    }
-});
+      }
 
-app.post('/api/backup/import', authenticateToken, async (req, res) => {
-    try {
-        // For now, just return success
-        res.json({ message: 'Import endpoint ready' });
+      res.setHeader("Content-Type", "application/sql");
+      res.setHeader(
+        "Content-Disposition",
+        `attachment; filename=zitemart_tenant_${req.user.tenant_id}_backup.sql`,
+      );
+      res.send(sql);
     } catch (error) {
-        console.error('Error importing database:', error);
-        res.status(500).json({ error: error.message });
+      console.error("Error exporting database:", error);
+      res.status(500).json({ error: error.message });
     }
-});
+  },
+);
 
-app.post('/api/backup/restore', authenticateToken, async (req, res) => {
+app.post(
+  "/api/backup/import",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        res.json({ message: 'Restore endpoint ready' });
+      // Stub — no tenant-scoped import yet. Returns success without doing anything.
+      res.json({ message: "Import endpoint ready" });
     } catch (error) {
-        console.error('Error restoring database:', error);
-        res.status(500).json({ error: error.message });
+      console.error("Error importing database:", error);
+      res.status(500).json({ error: error.message });
     }
-});
+  },
+);
+
+app.post(
+  "/api/backup/restore",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
+    try {
+      // Stub — no tenant-scoped restore yet.
+      res.json({ message: "Restore endpoint ready" });
+    } catch (error) {
+      console.error("Error restoring database:", error);
+      res.status(500).json({ error: error.message });
+    }
+  },
+);
 
 // ==================== ROLES & PERMISSIONS ENDPOINTS ====================
 
