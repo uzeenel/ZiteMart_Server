@@ -340,154 +340,241 @@ app.get(
 );
 
 
-app.post('/api/products', authenticateToken, async (req, res) => {
+app.post(
+  "/api/products",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const { 
-            name, sku, categoryId, unitId, barcode, 
-            costPrice, sellingPrice, stockQuantity, minStockLevel, 
-            isVatExempt, markupPercent, markupIsManual, imageUrl 
-        } = req.body;
-        
-        const [existing] = await pool.query('SELECT id FROM products WHERE sku = ?', [sku]);
-        if (existing.length > 0) {
-            return res.status(400).json({ error: 'SKU already exists' });
+      const {
+        name,
+        sku,
+        categoryId,
+        unitId,
+        barcode,
+        costPrice,
+        sellingPrice,
+        stockQuantity,
+        minStockLevel,
+        isVatExempt,
+        markupPercent,
+        markupIsManual,
+        imageUrl,
+      } = req.body;
+
+      const [existing] = await req.db.query(
+        "SELECT id FROM products WHERE sku = ?",
+        [sku],
+      );
+      if (existing.length > 0) {
+        return res.status(400).json({ error: "SKU already exists" });
+      }
+
+      // Get category name and markup
+      let categoryName = null;
+      let categoryMarkup = null;
+      if (categoryId) {
+        const [cats] = await req.db.query(
+          "SELECT name, markup_percent FROM categories WHERE id = ?",
+          [categoryId],
+        );
+        if (cats.length > 0) {
+          categoryName = cats[0].name;
+          categoryMarkup = cats[0].markup_percent;
         }
-        
-        // Get category name and markup
-        let categoryName = null;
-        let categoryMarkup = null;
-        if (categoryId) {
-            const [cats] = await pool.query('SELECT name, markup_percent FROM categories WHERE id = ?', [categoryId]);
-            if (cats.length > 0) {
-                categoryName = cats[0].name;
-                categoryMarkup = cats[0].markup_percent;
-            }
-        }
-        
-        // Get global markup
-        const [companyRows] = await pool.query('SELECT default_markup_percent FROM company LIMIT 1');
-        const globalMarkup = parseFloat(companyRows[0]?.default_markup_percent) || 0;
-        
-        // Resolve effective markup
-        const productOverride = markupPercent != null && markupPercent !== '' ? parseFloat(markupPercent) : null;
-        const effectiveMarkup =
-            productOverride != null ? productOverride :
-            categoryMarkup != null ? parseFloat(categoryMarkup) :
-            globalMarkup;
-        
-        // Determine if SP is manual
-        const isManual = markupIsManual === true || markupIsManual === 1 || markupIsManual === 'true';
-        
-        // Compute final SP
-        const cost = parseFloat(costPrice) || 0;
-        const finalSP = isManual
-            ? (parseFloat(sellingPrice) || 0)
-            : parseFloat((cost * (1 + effectiveMarkup / 100)).toFixed(2));
-        
-        const [result] = await pool.query(
-            `INSERT INTO products 
+      }
+
+      // Get global markup
+      const [companyRows] = await req.db.query(
+        "SELECT default_markup_percent FROM company LIMIT 1",
+      );
+      const globalMarkup =
+        parseFloat(companyRows[0]?.default_markup_percent) || 0;
+
+      // Resolve effective markup
+      const productOverride =
+        markupPercent != null && markupPercent !== ""
+          ? parseFloat(markupPercent)
+          : null;
+      const effectiveMarkup =
+        productOverride != null
+          ? productOverride
+          : categoryMarkup != null
+            ? parseFloat(categoryMarkup)
+            : globalMarkup;
+
+      // Determine if SP is manual
+      const isManual =
+        markupIsManual === true ||
+        markupIsManual === 1 ||
+        markupIsManual === "true";
+
+      // Compute final SP
+      const cost = parseFloat(costPrice) || 0;
+      const finalSP = isManual
+        ? parseFloat(sellingPrice) || 0
+        : parseFloat((cost * (1 + effectiveMarkup / 100)).toFixed(2));
+
+      const [result] = await req.db.query(
+        `INSERT INTO products 
              (name, sku, category_id, category_name, unit_id, barcode, 
               cost_price, selling_price, stock_quantity, min_stock_level, 
-              is_vat_exempt, is_active, markup_percent, markup_is_manual) 
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?) RETURNING id`,
-            [
-                name, sku, categoryId, categoryName, unitId, barcode,
-                cost, finalSP, stockQuantity, minStockLevel,
-                isVatExempt ? 1 : 0,
-                productOverride, isManual ? 1 : 0
-            ]
-        );
-        
-        res.json({ 
-            id: result[0].id, 
-            selling_price: finalSP,
-            markup_percent: productOverride,
-            markup_is_manual: isManual ? 1 : 0,
-            message: 'Product added successfully' 
-        });
-    } catch (error) {
-        console.error('Error adding product:', error);
-        res.status(500).json({ error: 'Server error' });
-    }
-});
+              is_vat_exempt, is_active, markup_percent, markup_is_manual, tenant_id) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?) RETURNING id`,
+        [
+          name,
+          sku,
+          categoryId,
+          categoryName,
+          unitId,
+          barcode,
+          cost,
+          finalSP,
+          stockQuantity,
+          minStockLevel,
+          isVatExempt ? 1 : 0,
+          productOverride,
+          isManual ? 1 : 0,
+          req.user.tenant_id,
+        ],
+      );
 
-app.put('/api/products/:id', authenticateToken, async (req, res) => {
+      res.json({
+        id: result[0].id,
+        selling_price: finalSP,
+        markup_percent: productOverride,
+        markup_is_manual: isManual ? 1 : 0,
+        message: "Product added successfully",
+      });
+    } catch (error) {
+      console.error("Error adding product:", error);
+      res.status(500).json({ error: "Server error" });
+    }
+  },
+);
+
+app.put(
+  "/api/products/:id",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const { 
-            name, sku, category_id, unit_id, barcode, 
-            cost_price, selling_price, stock_quantity, min_stock_level, 
-            is_vat_exempt, markup_percent, markup_is_manual, image_url 
-        } = req.body;
-        
-        // Get category name and markup
-        let categoryName = null;
-        let categoryMarkup = null;
-        if (category_id) {
-            const [cats] = await pool.query('SELECT name, markup_percent FROM categories WHERE id = ?', [category_id]);
-            if (cats.length > 0) {
-                categoryName = cats[0].name;
-                categoryMarkup = cats[0].markup_percent;
-            }
+      const {
+        name,
+        sku,
+        category_id,
+        unit_id,
+        barcode,
+        cost_price,
+        selling_price,
+        stock_quantity,
+        min_stock_level,
+        is_vat_exempt,
+        markup_percent,
+        markup_is_manual,
+        image_url,
+      } = req.body;
+
+      // Get category name and markup
+      let categoryName = null;
+      let categoryMarkup = null;
+      if (category_id) {
+        const [cats] = await req.db.query(
+          "SELECT name, markup_percent FROM categories WHERE id = ?",
+          [category_id],
+        );
+        if (cats.length > 0) {
+          categoryName = cats[0].name;
+          categoryMarkup = cats[0].markup_percent;
         }
-        
-        // Get global markup
-        const [companyRows] = await pool.query('SELECT default_markup_percent FROM company LIMIT 1');
-        const globalMarkup = parseFloat(companyRows[0]?.default_markup_percent) || 0;
-        
-        // Resolve effective markup
-        const productOverride = markup_percent != null && markup_percent !== '' ? parseFloat(markup_percent) : null;
-        const effectiveMarkup =
-            productOverride != null ? productOverride :
-            categoryMarkup != null ? parseFloat(categoryMarkup) :
-            globalMarkup;
-        
-        // Determine if SP is manual
-        const isManual = markup_is_manual === true || markup_is_manual === 1 || markup_is_manual === 'true';
-        
-        // Compute final SP
-        const cost = parseFloat(cost_price) || 0;
-        const finalSP = isManual
-            ? (parseFloat(selling_price) || 0)
-            : parseFloat((cost * (1 + effectiveMarkup / 100)).toFixed(2));
-        
-        await pool.query(
-            `UPDATE products SET 
-                name = ?, sku = ?, category_id = ?, category_name = ?, unit_id = ?, barcode = ?,
+      }
+
+      // Get global markup
+      const [companyRows] = await req.db.query(
+        "SELECT default_markup_percent FROM company LIMIT 1",
+      );
+      const globalMarkup =
+        parseFloat(companyRows[0]?.default_markup_percent) || 0;
+
+      // Resolve effective markup
+      const productOverride =
+        markup_percent != null && markup_percent !== ""
+          ? parseFloat(markup_percent)
+          : null;
+      const effectiveMarkup =
+        productOverride != null
+          ? productOverride
+          : categoryMarkup != null
+            ? parseFloat(categoryMarkup)
+            : globalMarkup;
+
+      // Determine if SP is manual
+      const isManual =
+        markup_is_manual === true ||
+        markup_is_manual === 1 ||
+        markup_is_manual === "true";
+
+      // Compute final SP
+      const cost = parseFloat(cost_price) || 0;
+      const finalSP = isManual
+        ? parseFloat(selling_price) || 0
+        : parseFloat((cost * (1 + effectiveMarkup / 100)).toFixed(2));
+
+      await req.db.query(
+        `UPDATE products SET 
+                name = ?, sku = ?, category_id = ?, category_name = ?, unit_id = ?,barcode = ?,
                 cost_price = ?, selling_price = ?, stock_quantity = ?, min_stock_level = ?,
                 is_vat_exempt = ?, is_active = 1, markup_percent = ?, markup_is_manual = ?
              WHERE id = ?`,
-            [
-                name, sku, category_id || null, categoryName, unit_id || null, barcode || null,
-                cost, finalSP, stock_quantity, min_stock_level,
-                is_vat_exempt ? 1 : 0,
-                productOverride, isManual ? 1 : 0,
-                req.params.id
-            ]
-        );
-        
-        res.json({ 
-            message: 'Product updated successfully',
-            selling_price: finalSP,
-            markup_percent: productOverride,
-            markup_is_manual: isManual ? 1 : 0
-        });
-    } catch (error) {
-        console.error('Error updating product:', error);
-        res.status(500).json({ error: 'Server error' });
-    }
-});
+        [
+          name,
+          sku,
+          category_id || null,
+          categoryName,
+          unit_id || null,
+          barcode || null,
+          cost,
+          finalSP,
+          stock_quantity,
+          min_stock_level,
+          is_vat_exempt ? 1 : 0,
+          productOverride,
+          isManual ? 1 : 0,
+          req.params.id,
+        ],
+      );
 
-app.post('/api/products/recalculate-prices', authenticateToken, async (req, res) => {
-    if (req.user.role !== 'admin' && req.user.role !== 'manager') {
-        return res.status(403).json({ error: 'Access denied' });
+      res.json({
+        message: "Product updated successfully",
+        selling_price: finalSP,
+        markup_percent: productOverride,
+        markup_is_manual: isManual ? 1 : 0,
+      });
+    } catch (error) {
+      console.error("Error updating product:", error);
+      res.status(500).json({ error: "Server error" });
+    }
+  },
+);
+
+app.post(
+  "/api/products/recalculate-prices",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
+    if (req.user.role !== "admin" && req.user.role !== "manager") {
+      return res.status(403).json({ error: "Access denied" });
     }
 
     try {
-        const [companyRows] = await pool.query('SELECT default_markup_percent FROM company LIMIT 1');
-        const globalMarkup = parseFloat(companyRows[0]?.default_markup_percent) || 0;
+      const [companyRows] = await req.db.query(
+        "SELECT default_markup_percent FROM company LIMIT 1",
+      );
+      const globalMarkup =
+        parseFloat(companyRows[0]?.default_markup_percent) || 0;
 
-        // Get all auto products (markup_is_manual = 0)
-        const [products] = await pool.query(`
+      // Get all auto products (markup_is_manual = 0)
+      const [products] = await req.db.query(`
             SELECT 
                 p.id, p.cost_price, p.markup_percent,
                 c.markup_percent as category_markup
@@ -496,100 +583,134 @@ app.post('/api/products/recalculate-prices', authenticateToken, async (req, res)
             WHERE p.is_active = 1 AND p.markup_is_manual = 0
         `);
 
-        let updated = 0;
-        for (const p of products) {
-            const effectiveMarkup =
-                p.markup_percent != null ? parseFloat(p.markup_percent) :
-                p.category_markup != null ? parseFloat(p.category_markup) :
-                globalMarkup;
+      let updated = 0;
+      for (const p of products) {
+        const effectiveMarkup =
+          p.markup_percent != null
+            ? parseFloat(p.markup_percent)
+            : p.category_markup != null
+              ? parseFloat(p.category_markup)
+              : globalMarkup;
 
-            const cost = parseFloat(p.cost_price) || 0;
-            const newSP = parseFloat((cost * (1 + effectiveMarkup / 100)).toFixed(2));
+        const cost = parseFloat(p.cost_price) || 0;
+        const newSP = parseFloat(
+          (cost * (1 + effectiveMarkup / 100)).toFixed(2),
+        );
 
-            await pool.query(
-                'UPDATE products SET selling_price = ? WHERE id = ?',
-                [newSP, p.id]
-            );
-            updated++;
-        }
+        await req.db.query(
+          "UPDATE products SET selling_price = ? WHERE id = ?",
+          [newSP, p.id],
+        );
+        updated++;
+      }
 
-        res.json({ 
-            message: `Recalculated ${updated} products`,
-            updated 
-        });
+      res.json({
+        message: `Recalculated ${updated} products`,
+        updated,
+      });
     } catch (error) {
-        console.error('Error recalculating prices:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error recalculating prices:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
-
-app.patch('/api/products/:id/stock', authenticateToken, async (req, res) => {
-    console.log('🔴 BACKEND STOCK UPDATE:', req.params.id, req.body);
+app.patch(
+  "/api/products/:id/stock",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
+    console.log("🔴 BACKEND STOCK UPDATE:", req.params.id, req.body);
     try {
-        const { quantity, mode } = req.body;
-        
-        // Get current stock
-        const [current] = await pool.query('SELECT stock_quantity FROM products WHERE id = ?', [req.params.id]);
-        const currentStock = parseFloat(current[0]?.stock_quantity) || 0;
-        
-        let newStock;
-        if (mode === 'set') {
-            // Set to exact quantity
-            newStock = quantity;
-        } else {
-            // Add (default behavior)
-            newStock = currentStock + quantity;
-        }
-        
-        // Update the product
-        await pool.query('UPDATE products SET stock_quantity = ? WHERE id = ?', [newStock, req.params.id]);
-        
-        res.json({ 
-            message: 'Stock updated successfully', 
-            previous: currentStock, 
-            new: newStock 
-        });
+      const { quantity, mode } = req.body;
+
+      // Get current stock
+      const [current] = await req.db.query(
+        "SELECT stock_quantity FROM products WHERE id = ?",
+        [req.params.id],
+      );
+      const currentStock = parseFloat(current[0]?.stock_quantity) || 0;
+
+      let newStock;
+      if (mode === "set") {
+        // Set to exact quantity
+        newStock = quantity;
+      } else {
+        // Add (default behavior)
+        newStock = currentStock + quantity;
+      }
+
+      // Update the product
+      await req.db.query(
+        "UPDATE products SET stock_quantity = ? WHERE id = ?",
+        [newStock, req.params.id],
+      );
+
+      res.json({
+        message: "Stock updated successfully",
+        previous: currentStock,
+        new: newStock,
+      });
     } catch (error) {
-        console.error('Error updating stock:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error updating stock:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
-
-app.delete('/api/products/:id', authenticateToken, async (req, res) => {
+app.delete(
+  "/api/products/:id",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        await pool.query('UPDATE products SET is_active = 0 WHERE id = ?', [req.params.id]);
-        res.json({ message: 'Product deleted successfully' });
+      await req.db.query("UPDATE products SET is_active = 0 WHERE id = ?", [
+        req.params.id,
+      ]);
+      res.json({ message: "Product deleted successfully" });
     } catch (error) {
-        console.error('Error deleting product:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error deleting product:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
 // Set stock directly (for opening balances)
-app.patch('/api/products/:id/set-stock', authenticateToken, async (req, res) => {
+app.patch(
+  "/api/products/:id/set-stock",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const { quantity } = req.body;
-        console.log('🔴 SET STOCK START:', req.params.id, 'to', quantity);
-        
-        // Check current stock before update
-        const [before] = await pool.query('SELECT stock_quantity FROM products WHERE id = ?', [req.params.id]);
-        console.log('🔴 BEFORE:', before[0]?.stock_quantity);
-        
-        await pool.query('UPDATE products SET stock_quantity = ? WHERE id = ?', [quantity, req.params.id]);
-        
-        // Check after update
-        const [after] = await pool.query('SELECT stock_quantity FROM products WHERE id = ?', [req.params.id]);
-        console.log('🔴 AFTER:', after[0]?.stock_quantity);
-        
-        res.json({ message: 'Stock set successfully', stock: quantity });
-    } catch (error) {
-        console.error('Error setting stock:', error);
-        res.status(500).json({ error: 'Server error' });
-    }
-});
+      const { quantity } = req.body;
+      console.log("🔴 SET STOCK START:", req.params.id, "to", quantity);
 
+      // Check current stock before update
+      const [before] = await req.db.query(
+        "SELECT stock_quantity FROM products WHERE id = ?",
+        [req.params.id],
+      );
+      console.log("🔴 BEFORE:", before[0]?.stock_quantity);
+
+      await req.db.query(
+        "UPDATE products SET stock_quantity = ? WHERE id = ?",
+        [quantity, req.params.id],
+      );
+
+      // Check after update
+      const [after] = await req.db.query(
+        "SELECT stock_quantity FROM products WHERE id = ?",
+        [req.params.id],
+      );
+      console.log("🔴 AFTER:", after[0]?.stock_quantity);
+
+      res.json({ message: "Stock set successfully", stock: quantity });
+    } catch (error) {
+      console.error("Error setting stock:", error);
+      res.status(500).json({ error: "Server error" });
+    }
+  },
+);
 // ==================== DASHBOARD ENDPOINTS ====================
 
 app.get(
