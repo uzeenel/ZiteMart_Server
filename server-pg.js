@@ -1062,83 +1062,100 @@ app.post(
 );
 
 
-app.get('/api/sales/:id', authenticateToken, async (req, res) => {
+app.get(
+  "/api/sales/:id",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const [sales] = await pool.query('SELECT * FROM sales WHERE id = ?', [req.params.id]);
-        if (sales.length === 0) return res.status(404).json({ error: 'Sale not found' });
-        
-        const [items] = await pool.query(
-            `SELECT si.*, p.name as product_name, p.sku, p.category_name 
-             FROM sale_items si LEFT JOIN products p ON si.product_id = p.id WHERE si.sale_id = ?`,
-            [sales[0].id]
-        );
-        
-        res.json({ sale: sales[0], items });
-    } catch (error) {
-        console.error('Error fetching sale detail:', error);
-        res.status(500).json({ error: 'Server error' });
-    }
-});
+      const [sales] = await req.db.query("SELECT * FROM sales WHERE id = ?", [
+        req.params.id,
+      ]);
+      if (sales.length === 0)
+        return res.status(404).json({ error: "Sale not found" });
 
-app.get('/api/sales/invoice/:invoiceNumber', authenticateToken, async (req, res) => {
-    try {
-        const [sales] = await pool.query('SELECT * FROM sales WHERE invoice_number = ?', [req.params.invoiceNumber]);
-        if (sales.length === 0) return res.status(404).json({ error: 'Sale not found' });
-        
-        const [items] = await pool.query(
-            `SELECT si.*, p.name as product_name, p.sku, p.category_name 
+      const [items] = await req.db.query(
+        `SELECT si.*, p.name as product_name, p.sku, p.category_name 
              FROM sale_items si LEFT JOIN products p ON si.product_id = p.id WHERE si.sale_id = ?`,
-            [sales[0].id]
-        );
-        
-        res.json({ ...sales[0], items });
+        [sales[0].id],
+      );
+
+      res.json({ sale: sales[0], items });
     } catch (error) {
-        console.error('Error fetching sale by invoice:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error fetching sale detail:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
+
+app.get(
+  "/api/sales/invoice/:invoiceNumber",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
+    try {
+      const [sales] = await req.db.query(
+        "SELECT * FROM sales WHERE invoice_number = ?",
+        [req.params.invoiceNumber],
+      );
+      if (sales.length === 0)
+        return res.status(404).json({ error: "Sale not found" });
+
+      const [items] = await req.db.query(
+        `SELECT si.*, p.name as product_name, p.sku, p.category_name 
+             FROM sale_items si LEFT JOIN products p ON si.product_id = p.id WHERE si.sale_id = ?`,
+        [sales[0].id],
+      );
+
+      res.json({ ...sales[0], items });
+    } catch (error) {
+      console.error("Error fetching sale by invoice:", error);
+      res.status(500).json({ error: "Server error" });
+    }
+  },
+);
 
 // Get all sales (with optional date range filter)
-app.get('/api/sales', authenticateToken, async (req, res) => {
-    try {
-        const { start, end } = req.query;
-        let salesQuery = 'SELECT * FROM sales';
-        let params = [];
-        
-        if (start && end) {
-            salesQuery += ' WHERE sale_date BETWEEN ? AND ?';
-            params = [start, end];
-        }
-        salesQuery += ' ORDER BY sale_date DESC';
-        
-        const [sales] = await pool.query(salesQuery, params);
-        
-        // Get items for each sale
-        const salesWithItems = [];
-        for (const sale of sales) {
-            const [items] = await pool.query(
-                `SELECT si.*, p.name as product_name, p.sku, p.category_name 
+app.get("/api/sales", authenticateToken, setTenantContext, async (req, res) => {
+  try {
+    const { start, end } = req.query;
+    let salesQuery = "SELECT * FROM sales";
+    let params = [];
+
+    if (start && end) {
+      salesQuery += " WHERE sale_date BETWEEN ? AND ?";
+      params = [start, end];
+    }
+    salesQuery += " ORDER BY sale_date DESC";
+
+    const [sales] = await req.db.query(salesQuery, params);
+
+    // Get items for each sale
+    const salesWithItems = [];
+    for (const sale of sales) {
+      const [items] = await req.db.query(
+        `SELECT si.*, p.name as product_name, p.sku, p.category_name 
                  FROM sale_items si 
                  LEFT JOIN products p ON si.product_id = p.id 
                  WHERE si.sale_id = ?`,
-                [sale.id]
-            );
-            
-            salesWithItems.push({
-                ...sale,
-                items: items.map(item => ({
-                    ...item,
-                    unit_price: parseFloat(item.unit_price),
-                    total: parseFloat(item.total)
-                }))
-            });
-        }
-        
-        res.json(salesWithItems);
-    } catch (error) {
-        console.error('Error fetching sales:', error);
-        res.status(500).json({ error: 'Server error' });
+        [sale.id],
+      );
+
+      salesWithItems.push({
+        ...sale,
+        items: items.map((item) => ({
+          ...item,
+          unit_price: parseFloat(item.unit_price),
+          total: parseFloat(item.total),
+        })),
+      });
     }
+
+    res.json(salesWithItems);
+  } catch (error) {
+    console.error("Error fetching sales:", error);
+    res.status(500).json({ error: "Server error" });
+  }
 });
 
 // ==================== CATEGORIES ENDPOINTS ====================
