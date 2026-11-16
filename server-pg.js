@@ -288,12 +288,20 @@ app.get('/api/products/next-sku', async (req, res) => {
 });
 
 
-app.get('/api/products/:id', authenticateToken, async (req, res) => {
+app.get(
+  "/api/products/:id",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const [companyRows] = await pool.query('SELECT default_markup_percent FROM company LIMIT 1');
-        const globalMarkup = parseFloat(companyRows[0]?.default_markup_percent) || 0;
+      const [companyRows] = await req.db.query(
+        "SELECT default_markup_percent FROM company LIMIT 1",
+      );
+      const globalMarkup =
+        parseFloat(companyRows[0]?.default_markup_percent) || 0;
 
-        const [products] = await pool.query(`
+      const [products] = await req.db.query(
+        `
             SELECT 
                 p.*, 
                 c.name as linked_category_name, 
@@ -304,27 +312,32 @@ app.get('/api/products/:id', authenticateToken, async (req, res) => {
             LEFT JOIN categories c ON p.category_id = c.id
             LEFT JOIN units u ON p.unit_id = u.id
             WHERE p.id = ? AND p.is_active = 1
-        `, [req.params.id]);
-        
-        if (products.length === 0) {
-            return res.status(404).json({ error: 'Product not found' });
-        }
+        `,
+        [req.params.id],
+      );
 
-        const p = products[0];
-        const enriched = {
-            ...p,
-            effective_markup_percent:
-                p.markup_percent != null ? parseFloat(p.markup_percent) :
-                p.category_markup != null ? parseFloat(p.category_markup) :
-                globalMarkup
-        };
+      if (products.length === 0) {
+        return res.status(404).json({ error: "Product not found" });
+      }
 
-        res.json(enriched);
+      const p = products[0];
+      const enriched = {
+        ...p,
+        effective_markup_percent:
+          p.markup_percent != null
+            ? parseFloat(p.markup_percent)
+            : p.category_markup != null
+              ? parseFloat(p.category_markup)
+              : globalMarkup,
+      };
+
+      res.json(enriched);
     } catch (error) {
-        console.error('Error fetching product:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error fetching product:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
 
 app.post('/api/products', authenticateToken, async (req, res) => {
