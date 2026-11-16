@@ -1626,37 +1626,79 @@ app.delete(
 
 // ==================== BANK BOOK ENDPOINTS ====================
 
-app.get('/api/bank-book', authenticateToken, async (req, res) => {
+app.get(
+  "/api/bank-book",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const { start, end } = req.query;
-        const [transactions] = await pool.query('SELECT * FROM bank_transactions WHERE date BETWEEN ? AND ? ORDER BY date DESC', [start, end]);
-        res.json(transactions);
+      const { start, end } = req.query;
+      const [transactions] = await req.db.query(
+        "SELECT * FROM bank_transactions WHERE date BETWEEN ? AND ? ORDER BY date DESC",
+        [start, end],
+      );
+      res.json(transactions);
     } catch (error) {
-        console.error('Error fetching bank transactions:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error fetching bank transactions:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
-app.post('/api/bank-book', authenticateToken, async (req, res) => {
+app.post(
+  "/api/bank-book",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const { date, type, amount, accountName, bankName, description, reference, userId } = req.body;
-        const [result] = await pool.query('INSERT INTO bank_transactions (date, type, amount, account_name, bank_name, description, reference, user_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id', [date, type, amount, accountName, bankName, description, reference, userId]);
-        res.json({ id: result[0].id, message: 'Transaction added successfully' });
+      const {
+        date,
+        type,
+        amount,
+        accountName,
+        bankName,
+        description,
+        reference,
+        userId,
+      } = req.body;
+      const [result] = await req.db.query(
+        "INSERT INTO bank_transactions (date, type, amount, account_name, bank_name, description, reference, user_id, tenant_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id",
+        [
+          date,
+          type,
+          amount,
+          accountName,
+          bankName,
+          description,
+          reference,
+          userId,
+          req.user.tenant_id,
+        ],
+      );
+      res.json({ id: result[0].id, message: "Transaction added successfully" });
     } catch (error) {
-        console.error('Error adding bank transaction:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error adding bank transaction:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
-app.delete('/api/bank-book/:id', authenticateToken, async (req, res) => {
+app.delete(
+  "/api/bank-book/:id",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        await pool.query('DELETE FROM bank_transactions WHERE id = ?', [req.params.id]);
-        res.json({ message: 'Transaction deleted successfully' });
+      await req.db.query("DELETE FROM bank_transactions WHERE id = ?", [
+        req.params.id,
+      ]);
+      res.json({ message: "Transaction deleted successfully" });
     } catch (error) {
-        console.error('Error deleting bank transaction:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error deleting bank transaction:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
 // ==================== STATES ENDPOINTS ====================
 
