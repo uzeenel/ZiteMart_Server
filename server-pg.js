@@ -3180,274 +3180,308 @@ app.delete(
   },
 );
 
-// ==================== PURCHASE ORDERS ENDPOINTS ====================
-
-app.get('/api/purchase-orders', authenticateToken, async (req, res) => {
+app.get(
+  "/api/purchase-orders",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const [orders] = await pool.query(`
+      const [orders] = await req.db.query(`
             SELECT po.*, v.name as vendor_name 
             FROM purchase_orders po
             LEFT JOIN vendors v ON po.vendor_id = v.id
             ORDER BY po.order_date DESC
         `);
-        res.json(orders);
+      res.json(orders);
     } catch (error) {
-        console.error('Error fetching purchase orders:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error fetching purchase orders:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
-app.get('/api/purchase-orders/:id', authenticateToken, async (req, res) => {
+app.get(
+  "/api/purchase-orders/:id",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const [orders] = await pool.query(`
+      const [orders] = await req.db.query(
+        `
             SELECT po.*, v.name as vendor_name 
             FROM purchase_orders po
             LEFT JOIN vendors v ON po.vendor_id = v.id
             WHERE po.id = ?
-        `, [req.params.id]);
-        
-        if (orders.length === 0) {
-            return res.status(404).json({ error: 'Purchase order not found' });
-        }
-        
-        const [items] = await pool.query(`
+        `,
+        [req.params.id],
+      );
+
+      if (orders.length === 0) {
+        return res.status(404).json({ error: "Purchase order not found" });
+      }
+
+      const [items] = await req.db.query(
+        `
             SELECT poi.*, p.name as product_name, p.sku
             FROM purchase_order_items poi
             LEFT JOIN products p ON poi.product_id = p.id
             WHERE poi.purchase_order_id = ?
-        `, [req.params.id]);
-        
-        res.json({
-            purchaseOrder: orders[0],
-            items: items
-        });
+        `,
+        [req.params.id],
+      );
+
+      res.json({
+        purchaseOrder: orders[0],
+        items: items,
+      });
     } catch (error) {
-        console.error('Error fetching purchase order detail:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error fetching purchase order detail:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
 // Create purchase order - WITH UNIT CONVERSION SUPPORT
-app.post('/api/purchase-orders', authenticateToken, async (req, res) => {
-    const connection = await pool.connect();
+app.post(
+  "/api/purchase-orders",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        await connection.beginTransaction();
-        
-        const { vendorId, items, notes } = req.body;
-        const poNumber = `PO-${Date.now()}`;
-        
-        let subtotal = 0;
-        for (const item of items) {
-            subtotal += item.quantity * item.unitPrice;
-        }
-        const tax = subtotal * 0.075;
-        const total = subtotal + tax;
-        
-        const [result] = await connection.query(
-            `INSERT INTO purchase_orders 
-             (po_number, vendor_id, order_date, subtotal, tax, total, status, notes, created_at, updated_at) 
-             VALUES (?, ?, NOW(), ?, ?, ?, 'pending', ?, NOW(), NOW()) RETURNING id`,
-            [poNumber, vendorId, subtotal, tax, total, notes]
-        );
-        
-        const poId = result[0].id;
-        
-        for (const item of items) {
-            // Store order unit information for conversion during receiving
-            await connection.query(
-                `INSERT INTO purchase_order_items 
+      const { vendorId, items, notes } = req.body;
+      const poNumber = `PO-${Date.now()}`;
+
+      let subtotal = 0;
+      for (const item of items) {
+        subtotal += item.quantity * item.unitPrice;
+      }
+      const tax = subtotal * 0.075;
+      const total = subtotal + tax;
+
+      const [result] = await req.db.query(
+        `INSERT INTO purchase_orders 
+             (po_number, vendor_id, order_date, subtotal, tax, total, status, notes, created_at, updated_at, tenant_id) 
+             VALUES (?, ?, NOW(), ?, ?, ?, 'pending', ?, NOW(), NOW(), ?) RETURNING id`,
+        [poNumber, vendorId, subtotal, tax, total, notes, req.user.tenant_id],
+      );
+
+      const poId = result[0].id;
+
+      for (const item of items) {
+        // Store order unit information for conversion during receiving
+        await req.db.query(
+          `INSERT INTO purchase_order_items 
                  (purchase_order_id, product_id, quantity, unit_price, total, received_quantity,
-                  order_unit_id, order_unit_name, order_unit_symbol, order_quantity) 
-                 VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
-                [poId, item.productId, item.quantity, item.unitPrice, item.quantity * item.unitPrice,
-                 item.orderUnitId, item.orderUnitName, item.unitSymbol, item.quantity]
-            );
-        }
-        
-        await connection.commit();
-        
-        res.json({ id: poId, po_number: poNumber, message: 'Purchase order created successfully' });
+                  order_unit_id, order_unit_name, order_unit_symbol, order_quantity, tenant_id) 
+                 VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)`,
+          [
+            poId,
+            item.productId,
+            item.quantity,
+            item.unitPrice,
+            item.quantity * item.unitPrice,
+            item.orderUnitId,
+            item.orderUnitName,
+            item.unitSymbol,
+            item.quantity,
+            req.user.tenant_id,
+          ],
+        );
+      }
+
+      res.json({
+        id: poId,
+        po_number: poNumber,
+        message: "Purchase order created successfully",
+      });
     } catch (error) {
-        await connection.rollback();
-        console.error('Error creating purchase order:', error);
-        res.status(500).json({ error: 'Server error' });
-    } finally {
-        connection.release();
+      console.error("Error creating purchase order:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
 // Receive purchase order items - WITH UNIT CONVERSION
-app.post('/api/purchase-orders/:id/receive', authenticateToken, async (req, res) => {
-    const connection = await pool.connect();
+app.post(
+  "/api/purchase-orders/:id/receive",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        await connection.beginTransaction();
-        
-        const { items, invoiceNumber } = req.body;
-        
-        console.log('=== RECEIVE PURCHASE ORDER ===');
-        console.log('PO ID:', req.params.id);
-        console.log('Invoice:', invoiceNumber);
-        
-        // Update invoice number if provided
-        if (invoiceNumber) {
-            await connection.query(
-                'UPDATE purchase_orders SET invoice_number = ? WHERE id = ?',
-                [invoiceNumber, req.params.id]
-            );
-        }
-        
-        // Process each item
-        for (const item of items) {
-            // Get purchase order item details
-            const [poItem] = await connection.query(
-                'SELECT order_unit_id, order_quantity, order_unit_name, product_id, quantity as ordered_quantity FROM purchase_order_items WHERE id = ?',
-                [item.id]
-            );
-            
-            if (poItem.length === 0) {
-                console.log(`Item ${item.id} not found, skipping`);
-                continue;
-            }
-            
-            // Calculate stock quantity (with unit conversion if needed)
-            let stockQuantity = item.receivedQuantity;
-            
-            if (poItem[0].order_unit_id && poItem[0].order_quantity) {
-                const [orderUnit] = await connection.query(
-                    'SELECT conversion_factor FROM units WHERE id = ?',
-                    [poItem[0].order_unit_id]
-                );
-                if (orderUnit.length > 0) {
-                    stockQuantity = item.receivedQuantity * orderUnit[0].conversion_factor;
-                    console.log(`Converting ${item.receivedQuantity} ${poItem[0].order_unit_name} to ${stockQuantity} base units`);
-                }
-            }
-            
-            // Update received quantity in purchase_order_items
-            await connection.query(
-                'UPDATE purchase_order_items SET received_quantity = ? WHERE id = ?',
-                [item.receivedQuantity, item.id]
-            );
-            
-            // Update product stock
-            await connection.query(
-                'UPDATE products SET stock_quantity = stock_quantity + ? WHERE id = ?',
-                [stockQuantity, item.productId]
-            );
-            
-            // Get current stock for balance
-            const [currentStock] = await connection.query(
-                'SELECT stock_quantity FROM products WHERE id = ?',
-                [item.productId]
-            );
-            const balanceAfter = currentStock[0]?.stock_quantity || 0;
-            const balanceBefore = balanceAfter - stockQuantity;
-            
-            // Get product details
-            const [product] = await connection.query(
-                'SELECT name, sku, unit_id FROM products WHERE id = ?',
-                [item.productId]
-            );
-            console.log('Product found:', product);
-            console.log('Product name:', product[0]?.name);
-            console.log('Product sku:', product[0]?.sku);
-            
-            // Get unit symbol
-            let unitSymbol = '';
-            if (product[0]?.unit_id) {
-                const [unit] = await connection.query(
-                    'SELECT symbol FROM units WHERE id = ?',
-                    [product[0].unit_id]
-                );
-                unitSymbol = unit[0]?.symbol || '';
-            }
-            
-            // Record stock movement
-            await connection.query(
-                `INSERT INTO stock_movements 
-                (product_id, product_name, sku, date, reference, movement_type, quantity, balance_before, balance_after, notes, user_id, unit_symbol, invoice_number)
-                VALUES (?, ?, ?, NOW(), ?, 'IN', ?, ?, ?, ?, ?, ?, ?)`,
-                [
-                    item.productId,
-                    product[0]?.name || '',
-                    product[0]?.sku || '',
-                    `PO-${req.params.id}`,
-                    stockQuantity,
-                    balanceBefore,
-                    balanceAfter,
-                    `Received from PO #${req.params.id}${invoiceNumber ? ` (Invoice: ${invoiceNumber})` : ''}`,
-                    req.user.id,
-                    unitSymbol,
-                    invoiceNumber || null
-                ]
-            );
+      const { items, invoiceNumber } = req.body;
+
+      console.log("=== RECEIVE PURCHASE ORDER ===");
+      console.log("PO ID:", req.params.id);
+      console.log("Invoice:", invoiceNumber);
+
+      // Update invoice number if provided
+      if (invoiceNumber) {
+        await req.db.query(
+          "UPDATE purchase_orders SET invoice_number = ? WHERE id = ?",
+          [invoiceNumber, req.params.id],
+        );
+      }
+
+      // Process each item
+      for (const item of items) {
+        // Get purchase order item details
+        const [poItem] = await req.db.query(
+          "SELECT order_unit_id, order_quantity, order_unit_name, product_id,quantity as ordered_quantity FROM purchase_order_items WHERE id = ?",
+          [item.id],
+        );
+
+        if (poItem.length === 0) {
+          console.log(`Item ${item.id} not found, skipping`);
+          continue;
         }
 
-        // FIXED: Check if ALL items are fully received
-        // First, get all items for this PO
-        const [allItems] = await connection.query(
-            'SELECT id, quantity, received_quantity FROM purchase_order_items WHERE purchase_order_id = ?',
-            [req.params.id]
-        );
-        
-        console.log('=== CHECKING RECEIVED STATUS ===');
-        console.log('Items found:', allItems.length);
-        
-        let totalItems = allItems.length;
-        let fullyReceived = 0;
-        
-        for (const item of allItems) {
-            console.log(`Item ${item.id}: quantity=${item.quantity}, received=${item.received_quantity}`);
-            if (item.received_quantity >= item.quantity) {
-                fullyReceived++;
-            }
+        // Calculate stock quantity (with unit conversion if needed)
+        let stockQuantity = item.receivedQuantity;
+
+        if (poItem[0].order_unit_id && poItem[0].order_quantity) {
+          const [orderUnit] = await req.db.query(
+            "SELECT conversion_factor FROM units WHERE id = ?",
+            [poItem[0].order_unit_id],
+          );
+          if (orderUnit.length > 0) {
+            stockQuantity =
+              item.receivedQuantity * orderUnit[0].conversion_factor;
+            console.log(
+              `Converting ${item.receivedQuantity} ${poItem[0].order_unit_name} to ${stockQuantity} base units`,
+            );
+          }
         }
-        
-        console.log(`Total items: ${totalItems}, Fully received: ${fullyReceived}`);
-        
-        let newStatus = 'pending';
-        if (fullyReceived === totalItems && totalItems > 0) {
-            newStatus = 'received';
-        } else if (fullyReceived > 0) {
-            newStatus = 'partial';
-        } else {
-            newStatus = 'pending';
-        }
-        
-        console.log(`Setting PO status to: ${newStatus}`);
-        
-        await connection.query(
-            'UPDATE purchase_orders SET status = ?, updated_at = NOW() WHERE id = ?',
-            [newStatus, req.params.id]
+
+        // Update received quantity in purchase_order_items
+        await req.db.query(
+          "UPDATE purchase_order_items SET received_quantity = ? WHERE id = ?",
+          [item.receivedQuantity, item.id],
         );
-        
-        await connection.commit();
-        console.log('✅ Receive completed successfully');
-        res.json({ message: 'Items received successfully', status: newStatus });
-        
+
+        // Update product stock
+        await req.db.query(
+          "UPDATE products SET stock_quantity = stock_quantity + ? WHERE id = ?",
+          [stockQuantity, item.productId],
+        );
+
+        // Get current stock for balance
+        const [currentStock] = await req.db.query(
+          "SELECT stock_quantity FROM products WHERE id = ?",
+          [item.productId],
+        );
+        const balanceAfter = currentStock[0]?.stock_quantity || 0;
+        const balanceBefore = balanceAfter - stockQuantity;
+
+        // Get product details
+        const [product] = await req.db.query(
+          "SELECT name, sku, unit_id FROM products WHERE id = ?",
+          [item.productId],
+        );
+        console.log("Product found:", product);
+        console.log("Product name:", product[0]?.name);
+        console.log("Product sku:", product[0]?.sku);
+
+        // Get unit symbol
+        let unitSymbol = "";
+        if (product[0]?.unit_id) {
+          const [unit] = await req.db.query(
+            "SELECT symbol FROM units WHERE id = ?",
+            [product[0].unit_id],
+          );
+          unitSymbol = unit[0]?.symbol || "";
+        }
+
+        // Record stock movement
+        await req.db.query(
+          `INSERT INTO stock_movements 
+                (product_id, product_name, sku, date, reference, movement_type, quantity, balance_before, balance_after, notes, user_id, unit_symbol, invoice_number, tenant_id)
+                VALUES (?, ?, ?, NOW(), ?, 'IN', ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            item.productId,
+            product[0]?.name || "",
+            product[0]?.sku || "",
+            `PO-${req.params.id}`,
+            stockQuantity,
+            balanceBefore,
+            balanceAfter,
+            `Received from PO #${req.params.id}${invoiceNumber ? ` (Invoice: ${invoiceNumber})` : ""}`,
+            req.user.id,
+            unitSymbol,
+            invoiceNumber || null,
+            req.user.tenant_id,
+          ],
+        );
+      }
+
+      // Check if ALL items are fully received
+      const [allItems] = await req.db.query(
+        "SELECT id, quantity, received_quantity FROM purchase_order_items WHERE purchase_order_id = ?",
+        [req.params.id],
+      );
+
+      console.log("=== CHECKING RECEIVED STATUS ===");
+      console.log("Items found:", allItems.length);
+
+      let totalItems = allItems.length;
+      let fullyReceived = 0;
+
+      for (const item of allItems) {
+        console.log(
+          `Item ${item.id}: quantity=${item.quantity}, received=${item.received_quantity}`,
+        );
+        if (item.received_quantity >= item.quantity) {
+          fullyReceived++;
+        }
+      }
+
+      console.log(
+        `Total items: ${totalItems}, Fully received: ${fullyReceived}`,
+      );
+
+      let newStatus = "pending";
+      if (fullyReceived === totalItems && totalItems > 0) {
+        newStatus = "received";
+      } else if (fullyReceived > 0) {
+        newStatus = "partial";
+      } else {
+        newStatus = "pending";
+      }
+
+      console.log(`Setting PO status to: ${newStatus}`);
+
+      await req.db.query(
+        "UPDATE purchase_orders SET status = ?, updated_at = NOW() WHERE id = ?",
+        [newStatus, req.params.id],
+      );
+
+      console.log("✅ Receive completed successfully");
+      res.json({ message: "Items received successfully", status: newStatus });
     } catch (error) {
-        await connection.rollback();
-        console.error('❌ Error receiving items:', error);
-        res.status(500).json({ error: error.message || 'Server error' });
-    } finally {
-        connection.release();
+      console.error("❌ Error receiving items:", error);
+      res.status(500).json({ error: error.message || "Server error" });
     }
-});
+  },
+);
 
 // Cancel purchase order
-app.patch('/api/purchase-orders/:id/cancel', authenticateToken, async (req, res) => {
+app.patch(
+  "/api/purchase-orders/:id/cancel",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const { reason } = req.body;
-        await pool.query(
-            'UPDATE purchase_orders SET status = ?, notes = COALESCE(notes, \'\') || \' | Cancelled: \' || ?, updated_at = NOW() WHERE id = ?',
-            ['cancelled', reason, req.params.id]
-        );
-        res.json({ message: 'Purchase order cancelled' });
+      const { reason } = req.body;
+      await req.db.query(
+        "UPDATE purchase_orders SET status = ?, notes = COALESCE(notes, '') || ' | Cancelled: ' || ?, updated_at = NOW() WHERE id = ?",
+        ["cancelled", reason, req.params.id],
+      );
+      res.json({ message: "Purchase order cancelled" });
     } catch (error) {
-        console.error('Error cancelling purchase order:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error cancelling purchase order:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
 // ==================== VENDOR PAYMENTS ENDPOINTS ====================
 
