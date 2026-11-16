@@ -4005,108 +4005,139 @@ app.patch(
 
 // ==================== CREDIT PAYMENTS ENDPOINT ====================
 
-app.post('/api/credit-payments', authenticateToken, async (req, res) => {
-    const { credit_sale_id, customer_id, amount, payment_method, reference_number, notes, account_name, bank_name } = req.body;
-    
-    const connection = await pool.connect();
+app.post(
+  "/api/credit-payments",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
+    const {
+      credit_sale_id,
+      customer_id,
+      amount,
+      payment_method,
+      reference_number,
+      notes,
+      account_name,
+      bank_name,
+    } = req.body;
+
     try {
-        await connection.beginTransaction();
-        
-        console.log('=== CREDIT PAYMENT ===');
-        console.log('credit_sale_id:', credit_sale_id);
-        console.log('customer_id:', customer_id);
-        console.log('amount:', amount);
-        console.log('payment_method:', payment_method);
-        
-        // Insert the payment
-        const [result] = await connection.query(
-            `INSERT INTO credit_payments 
-            (credit_sale_id, customer_id, amount, payment_method, reference_number, notes, recorded_by, payment_date) 
-            VALUES (?, ?, ?, ?, ?, ?, ?, NOW())`,
-            [credit_sale_id, customer_id, amount, payment_method, reference_number, notes, req.user.id]
+      console.log("=== CREDIT PAYMENT ===");
+      console.log("credit_sale_id:", credit_sale_id);
+      console.log("customer_id:", customer_id);
+      console.log("amount:", amount);
+      console.log("payment_method:", payment_method);
+
+      // Insert the payment
+      const [result] = await req.db.query(
+        `INSERT INTO credit_payments 
+            (credit_sale_id, customer_id, amount, payment_method, reference_number,notes, recorded_by, payment_date, tenant_id) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, NOW(), ?)`,
+        [
+          credit_sale_id,
+          customer_id,
+          amount,
+          payment_method,
+          reference_number,
+          notes,
+          req.user.id,
+          req.user.tenant_id,
+        ],
+      );
+
+      // Update credit sale status
+      const [sale] = await req.db.query(
+        "SELECT total FROM credit_sales WHERE id = ?",
+        [credit_sale_id],
+      );
+
+      if (sale.length === 0) {
+        return res.status(404).json({ error: "Credit sale not found" });
+      }
+
+      // Get total paid so far
+      const [paid] = await req.db.query(
+        "SELECT COALESCE(SUM(amount), 0) as total FROM credit_payments WHERE credit_sale_id = ?",
+        [credit_sale_id],
+      );
+
+      const totalPaidSoFar = paid[0].total;
+      const newTotalPaid = totalPaidSoFar + amount;
+
+      let newStatus = "partially_paid";
+      if (newTotalPaid >= sale[0].total) {
+        newStatus = "paid";
+      }
+
+      await req.db.query("UPDATE credit_sales SET status = ? WHERE id = ?", [
+        newStatus,
+        credit_sale_id,
+      ]);
+
+      // Update customer balance
+      await req.db.query(
+        "UPDATE customers SET current_balance = current_balance - ? WHERE id = ?",
+        [amount, customer_id],
+      );
+
+      // Record in cash/bank book
+      const description = `Credit payment from customer - Sale ID: ${credit_sale_id}`;
+      const dateStr = new Date().toISOString().slice(0, 19).replace("T", " ");
+
+      if (payment_method === "cash") {
+        await req.db.query(
+          `INSERT INTO cash_transactions (date, type, amount, category, description, reference, user_id, tenant_id) 
+                 VALUES (?, 'cash_in', ?, 'Credit Payment', ?, ?, ?, ?)`,
+          [
+            dateStr,
+            amount,
+            description,
+            reference_number || `PAY-${credit_sale_id}`,
+            req.user.id,
+            req.user.tenant_id,
+          ],
         );
-        
-        // Update credit sale status
-        const [sale] = await connection.query(
-            'SELECT total FROM credit_sales WHERE id = ?',
-            [credit_sale_id]
+        console.log("Cash transaction recorded for credit payment");
+      } else if (payment_method === "card" || payment_method === "transfer") {
+        // Get the first active bank account
+        const [accounts] = await req.db.query(
+          "SELECT id FROM bank_accounts WHERE is_active = 1 LIMIT 1",
         );
-        
-        if (sale.length === 0) {
-            return res.status(404).json({ error: 'Credit sale not found' });
+        const bankAccountId = accounts.length > 0 ? accounts[0].id : null;
+
+        await req.db.query(
+          `INSERT INTO bank_transactions (date, type, amount, account_name, bank_name, description, reference, user_id, bank_account_id, tenant_id) 
+                 VALUES (?, 'deposit', ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            dateStr,
+            amount,
+            account_name || "Customer Payment",
+            bank_name || "Bank Transfer",
+            description,
+            reference_number || `PAY-${credit_sale_id}`,
+            req.user.id,
+            bankAccountId,
+            req.user.tenant_id,
+          ],
+        );
+        console.log("Bank transaction recorded for credit payment");
+
+        if (bankAccountId) {
+          await req.db.query(
+            "UPDATE bank_accounts SET current_balance = current_balance + ? WHERE id = ?",
+            [amount, bankAccountId],
+          );
+          console.log(`Added ${amount} to bank account ${bankAccountId}`);
         }
-        
-        // Get total paid so far
-        const [paid] = await connection.query(
-            'SELECT COALESCE(SUM(amount), 0) as total FROM credit_payments WHERE credit_sale_id = ?',
-            [credit_sale_id]
-        );
-        
-        const totalPaidSoFar = paid[0].total;
-        const newTotalPaid = totalPaidSoFar + amount;
-        
-        let newStatus = 'partially_paid';
-        if (newTotalPaid >= sale[0].total) {
-            newStatus = 'paid';
-        }
-        
-        await connection.query(
-            'UPDATE credit_sales SET status = ? WHERE id = ?',
-            [newStatus, credit_sale_id]
-        );
-        
-        // Update customer balance
-        await connection.query(
-            'UPDATE customers SET current_balance = current_balance - ? WHERE id = ?',
-            [amount, customer_id]
-        );
-        
-        // Record in cash/bank book
-        const description = `Credit payment from customer - Sale ID: ${credit_sale_id}`;
-        const dateStr = new Date().toISOString().slice(0, 19).replace('T', ' ');
-        
-        if (payment_method === 'cash') {
-            await connection.query(
-                `INSERT INTO cash_transactions (date, type, amount, category, description, reference, user_id) 
-                 VALUES (?, 'cash_in', ?, 'Credit Payment', ?, ?, ?)`,
-                [dateStr, amount, description, reference_number || `PAY-${credit_sale_id}`, req.user.id]
-            );
-            console.log('Cash transaction recorded for credit payment');
-        } else if (payment_method === 'card' || payment_method === 'transfer') {
-            // Get the first active bank account
-            const [accounts] = await connection.query(
-                'SELECT id FROM bank_accounts WHERE is_active = 1 LIMIT 1'
-            );
-            const bankAccountId = accounts.length > 0 ? accounts[0].id : null;
-            
-            await connection.query(
-                `INSERT INTO bank_transactions (date, type, amount, account_name, bank_name, description, reference, user_id, bank_account_id) 
-                 VALUES (?, 'deposit', ?, ?, ?, ?, ?, ?, ?)`,
-                [dateStr, amount, account_name || 'Customer Payment', bank_name || 'Bank Transfer', 
-                 description, reference_number || `PAY-${credit_sale_id}`, req.user.id, bankAccountId]
-            );
-            console.log('Bank transaction recorded for credit payment');
-            
-            if (bankAccountId) {
-                await connection.query(
-                    'UPDATE bank_accounts SET current_balance = current_balance + ? WHERE id = ?',
-                    [amount, bankAccountId]
-                );
-                console.log(`Added ${amount} to bank account ${bankAccountId}`);
-            }
-        }
-        
-        await connection.commit();
-        res.json({ success: true, message: 'Payment recorded successfully' });
-        
+      }
+
+      res.json({ success: true, message: "Payment recorded successfully" });
     } catch (error) {
-        await connection.rollback();
-        console.error('Error recording credit payment:', error);
-        res.status(500).json({ error: 'Server error' });
-    } finally {
-        connection.release();
+      console.error("Error recording credit payment:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
 // ==================== LAYAWAY ENDPOINTS ====================
 
