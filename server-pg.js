@@ -2765,11 +2765,10 @@ app.patch(
         [req.params.id],
       );
 
-      await req.db.query(
-        `UPDATE notifications SET is_read = TRUE 
-             WHERE reference_id = ? AND type IN ('credit_approved', 'credit_rejected')`,
-        [creditSale[0].sale_id],
-      );
+        await req.db.query(
+        "UPDATE notifications SET is_read = 1 WHERE id = ? AND user_id = ?",
+        [req.params.id, req.user.id],
+        );
 
       res.json({ message: "Credit sale completed. Stock deducted." });
     } catch (error) {
@@ -3819,32 +3818,42 @@ app.post(
 // ==================== NOTIFICATIONS ENDPOINTS ====================
 
 // Get notifications for current user
-app.get('/api/notifications', authenticateToken, async (req, res) => {
+app.get(
+  "/api/notifications",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        const [notifications] = await pool.query(
-            'SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC',
-            [req.user.id]
-        );
-        res.json(notifications);
+      const [notifications] = await req.db.query(
+        "SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC",
+        [req.user.id],
+      );
+      res.json(notifications);
     } catch (error) {
-        console.error('Error fetching notifications:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error fetching notifications:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
 // Mark notification as read
-app.patch('/api/notifications/:id/read', authenticateToken, async (req, res) => {
+app.patch(
+  "/api/notifications/:id/read",
+  authenticateToken,
+  setTenantContext,
+  async (req, res) => {
     try {
-        await pool.query(
-            'UPDATE notifications SET is_read = TRUE WHERE id = ? AND user_id = ?',
-            [req.params.id, req.user.id]
-        );
-        res.json({ message: 'Notification marked as read' });
+      await req.db.query(
+        "UPDATE notifications SET is_read = 1 WHERE id = ? AND user_id = ?",
+        [req.params.id, req.user.id],
+      );
+      res.json({ message: "Notification marked as read" });
     } catch (error) {
-        console.error('Error marking notification read:', error);
-        res.status(500).json({ error: 'Server error' });
+      console.error("Error marking notification read:", error);
+      res.status(500).json({ error: "Server error" });
     }
-});
+  },
+);
 
 // ==================== BANKS ENDPOINTS ====================
 
