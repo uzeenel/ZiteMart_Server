@@ -70,54 +70,114 @@ let requestCounter = 0;
 
 // ==================== AUTH ENDPOINTS ====================
 
-app.post('/api/login', async (req, res) => {
-    try {
-        const { username, password } = req.body;
-        
-        const [users] = await pool.query('SELECT * FROM users WHERE username = ?', [username]);
-        
-        if (users.length === 0) {
-            return res.status(401).json({ error: 'Invalid credentials' });
-        }
-        
-        const user = users[0];
-        
-        if (user.is_active !== 1) {
-            return res.status(401).json({ error: 'Account disabled' });
-        }
-        
-        const isValid = await bcrypt.compare(password, user.password);
-        
-        if (!isValid) {
-            return res.status(401).json({ error: 'Invalid credentials' });
-        }
-        
-        await pool.query('UPDATE users SET last_login = NOW() WHERE id = ?', [user.id]);
-        
-        const token = jwt.sign(
-          {
-            id: user.id,
-            username: user.username,
-            role: user.role,
-            tenant_id: user.tenant_id,
-          },
-          JWT_SECRET,
-          { expiresIn: "8h" },
-        );
-        
-        res.json({
-            token,
-            user: {
-                id: user.id,
-                username: user.username,
-                fullName: user.full_name,
-                role: user.role,
-            }
-        });
-    } catch (error) {
-        console.error('Login error:', error);
-        res.status(500).json({ error: 'Server error' });
+app.post("/api/login", async (req, res) => {
+  try {
+    const { username, password, tenant_slug } = req.body;
+
+    // Resolve tenant. Accepts either:
+    //   1. tenant_slug from request body (tenant-picker, works today)
+    //   2. subdomain from Host header (once wildcard is enabled)
+    let tenantId = null;
+    let slug = tenant_slug;
+
+    if (!slug) {
+      // Fallback: try subdomain from Host header
+      const host = (req.headers.host || "").split(":")[0];
+      const parts = host.split(".");
+      if (parts.length > 2 && parts[0] !== "www") {
+        slug = parts[0];
+      }
     }
+
+    if (slug) {
+      const [tenants] = await pool.query(
+        "SELECT id, slug, status FROM tenants WHERE slug = $1",
+        [slug],
+      );
+      if (tenants.length === 0) {
+        return res.status(401).json({ error: "Invalid credentials" });
+      }
+      if (tenants[0].status !== "active") {
+        return res
+          .status(401)
+          .json({ error: "Business account is not active" });
+      }
+      tenantId = tenants[0].id;
+    } else {
+      // No tenant provided — reject. SaaS login requires tenant context.
+      return res.status(400).json({ error: "Business code required" });
+    }
+
+    // Open a dedicated connection, set tenant context, then query users.
+    // This works under RLS: app.tenant_id filters users to the resolved tenant.
+    const client = await _pgPool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query("SELECT set_config('app.tenant_id', $1, true)", [
+        String(tenantId),
+      ]);
+
+      const result = await client.query(
+        "SELECT * FROM users WHERE username = $1",
+        [username],
+      );
+      const users = result.rows;
+
+      if (users.length === 0) {
+        await client.query("ROLLBACK");
+        return res.status(401).json({ error: "Invalid credentials" });
+      }
+
+      const user = users[0];
+
+      if (user.is_active !== 1) {
+        await client.query("ROLLBACK");
+        return res.status(401).json({ error: "Account disabled" });
+      }
+
+      const isValid = await bcrypt.compare(password, user.password);
+      if (!isValid) {
+        await client.query("ROLLBACK");
+        return res.status(401).json({ error: "Invalid credentials" });
+      }
+
+      await client.query("UPDATE users SET last_login = NOW() WHERE id = $1", [
+        user.id,
+      ]);
+
+      await client.query("COMMIT");
+
+      const token = jwt.sign(
+        {
+          id: user.id,
+          username: user.username,
+          role: user.role,
+          tenant_id: user.tenant_id,
+        },
+        JWT_SECRET,
+        { expiresIn: "8h" },
+      );
+
+      res.json({
+        token,
+        user: {
+          id: user.id,
+          username: user.username,
+          fullName: user.full_name,
+          role: user.role,
+          tenant_id: user.tenant_id,
+        },
+      });
+    } catch (err) {
+      await client.query("ROLLBACK");
+      throw err;
+    } finally {
+      client.release();
+    }
+  } catch (error) {
+    console.error("Login error:", error);
+    res.status(500).json({ error: "Server error" });
+  }
 });
 
 // ==================== AUTH MIDDLEWARE ====================
