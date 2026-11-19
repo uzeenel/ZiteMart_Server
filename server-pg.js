@@ -68,6 +68,97 @@ const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this';
 
 let requestCounter = 0;
 
+app.post("/api/register", async (req, res) => {
+  const { businessName, businessSlug, email, username, password, fullName } =
+    req.body;
+
+  if (!businessName || !businessSlug || !username || !password) {
+    return res.status(400).json({ error: "Missing required fields" });
+  }
+
+  // Basic slug validation (lowercase, no spaces)
+  const slug = businessSlug.toLowerCase().replace(/[^a-z0-9-]/g, "");
+  if (slug.length < 3) {
+    return res
+      .status(400)
+      .json({ error: "Business code must be at least 3 characters" });
+  }
+
+  const client = await _pgPool.connect();
+  try {
+    await client.query("BEGIN");
+
+    // 1. Check if slug is taken
+    const slugCheck = await client.query(
+      "SELECT id FROM tenants WHERE slug = $1",
+      [slug],
+    );
+    if (slugCheck.rows.length > 0) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ error: "Business code is already taken" });
+    }
+
+    // 2. Create the tenant
+    const tenantResult = await client.query(
+      `INSERT INTO tenants (slug, name, email, status) 
+             VALUES ($1, $2, $3, 'active') RETURNING id`,
+      [slug, businessName, email || ""],
+    );
+    const tenantId = tenantResult.rows[0].id;
+
+    // Set RLS context to the new tenant so we can insert their roles and users
+    await client.query("SELECT set_config('app.tenant_id', $1, true)", [
+      String(tenantId),
+    ]);
+
+    // 3. Create the default 'admin' role for this tenant
+    const roleResult = await client.query(
+      `INSERT INTO roles (name, description, is_system, tenant_id) 
+             VALUES ('admin', 'Full access to everything', 1, $1) RETURNING id`,
+      [tenantId],
+    );
+    const roleId = roleResult.rows[0].id;
+
+    // 4. Fetch all global permissions and assign them to the admin role
+    // 4. Fetch all global permissions and assign them to the admin role
+    const perms = await client.query("SELECT id FROM permissions");
+    if (perms.rows.length > 0) {
+      // Build placeholders like ($1, $2, $3), ($1, $4, $3), etc.
+      const placeholders = perms.rows
+        .map((_, i) => `($1, $${i + 2}, $${perms.rows.length + 2})`)
+        .join(", ");
+
+      const flatParams = [roleId];
+      for (const p of perms.rows) {
+        flatParams.push(p.id);
+      }
+      flatParams.push(tenantId); // This goes at the very end ($29)
+
+      await client.query(
+        `INSERT INTO role_permissions (role_id, permission_id, tenant_id) VALUES ${placeholders}`,
+        flatParams,
+      );
+    }
+
+    // 5. Hash password and create the admin user
+    const hashedPassword = await bcrypt.hash(password, 10);
+    await client.query(
+      `INSERT INTO users (username, password, full_name, role, role_id, is_active, tenant_id) 
+             VALUES ($1, $2, $3, 'admin', $4, 1, $5)`,
+      [username, hashedPassword, fullName || username, roleId, tenantId],
+    );
+
+    await client.query("COMMIT");
+    res.json({ message: "Registration successful", tenant_slug: slug });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    console.error("Registration error:", error);
+    res.status(500).json({ error: "Registration failed" });
+  } finally {
+    client.release();
+  }
+});
+
 // ==================== AUTH ENDPOINTS ====================
 
 app.post("/api/login", async (req, res) => {
