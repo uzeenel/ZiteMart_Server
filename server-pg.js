@@ -384,7 +384,8 @@ const authenticateToken = (req, res, next) => {
 app.post("/api/billing/initialize", authenticateToken, async (req, res) => {
   try {
     const { planCode } = req.body;
-    if (!planCode) return res.status(400).json({ error: "Plan code required" });
+    if (!planCode && !amount)
+      return res.status(400).json({ error: "Plan code or amount required" });
 
     // Get current tenant details to pass to Paystack
     const tenantId = req.user.tenant_id;
@@ -409,7 +410,7 @@ app.post("/api/billing/initialize", authenticateToken, async (req, res) => {
         },
         body: JSON.stringify({
           email: email,
-          plan: planCode,
+          ...(planCode ? { plan: planCode } : { amount: amount }), // Use plan OR amount
           callback_url: "https://zite.chowexpress.co/#/billing-callback",
           metadata: {
             tenant_id: tenantId,
