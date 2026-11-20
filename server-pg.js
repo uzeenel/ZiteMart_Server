@@ -5,6 +5,7 @@ const path = require('path');
 const fs = require('fs');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
+const crypto = require("crypto");
 if (require('fs').existsSync('.env.pg')) {
     require('dotenv').config({ path: '.env.pg', override: true });
 } else {
@@ -17,6 +18,89 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 // Add multer configuration at the top of your file (after other requires)
 const multer = require('multer');
+
+// ==================== PAYSTACK WEBHOOK ====================
+// MUST be registered BEFORE express.json() so we can access the raw body
+// for HMAC signature verification. This route is self-contained.
+app.post(
+  '/api/billing/webhook',
+  express.raw({ type: 'application/json' }),
+  async (req, res) => {
+    try {
+      const secret = process.env.PAYSTACK_SECRET_KEY;
+      const hash = crypto
+        .createHmac('sha512', secret)
+        .update(req.body)
+        .digest('hex');
+
+      if (hash !== req.headers['x-paystack-signature']) {
+        console.error('Webhook: Invalid signature');
+        return res.sendStatus(401);
+      }
+
+      const event = JSON.parse(req.body.toString());
+      const { event: eventType, data } = event;
+      console.log('=== PAYSTACK WEBHOOK:', eventType, '===');
+
+      if (eventType === 'charge.success' || eventType === 'subscription.create') {
+        const tenantId = data.metadata?.tenant_id;
+        if (!tenantId) {
+          console.error('Webhook: No tenant_id in metadata');
+          return res.sendStatus(200);
+        }
+
+        const subscriptionCode = data.subscription_code || null;
+        const customerCode = data.customer?.customer_code || null;
+        const planCode = data.plan?.plan_code || null;
+        const nextPayment = data.subscription?.next_payment_date 
+          ? new Date(data.subscription.next_payment_date) 
+          : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+
+        await pool.query(
+          `UPDATE tenants 
+           SET subscription_status = 'active',
+               paystack_customer_code = COALESCE($1, paystack_customer_code),
+               paystack_subscription_code = COALESCE($2, paystack_subscription_code),
+               paystack_plan_code = COALESCE($3, paystack_plan_code),
+               current_period_end = $4,
+               status = 'active'
+           WHERE id = $5`,
+          [customerCode, subscriptionCode, planCode, nextPayment, tenantId]
+        );
+        console.log(`Tenant ${tenantId} subscription activated.`);
+      }
+
+      if (eventType === 'invoice.payment_failed' || eventType === 'subscription.not_renew') {
+        const tenantId = data.metadata?.tenant_id;
+        if (tenantId) {
+          await pool.query(
+            `UPDATE tenants SET subscription_status = 'attention' WHERE id = $1`,
+            [tenantId]
+          );
+          console.log(`Tenant ${tenantId} subscription failed/attention.`);
+        }
+      }
+
+      if (eventType === 'subscription.disable') {
+        const customerCode = data.customer?.customer_code;
+        if (customerCode) {
+          await pool.query(
+            `UPDATE tenants SET subscription_status = 'cancelled' WHERE paystack_customer_code = $1`,
+            [customerCode]
+          );
+          console.log(`Subscription cancelled for customer ${customerCode}.`);
+        }
+      }
+
+      res.sendStatus(200);
+    } catch (error) {
+      console.error('Webhook error:', error);
+      res.sendStatus(500);
+    }
+  }
+);
+
+app.use(express.json());
 
 // Middleware
 app.use(cors());
@@ -159,6 +243,8 @@ app.post("/api/register", async (req, res) => {
   }
 });
 
+
+
 // ==================== AUTH ENDPOINTS ====================
 
 app.post("/api/login", async (req, res) => {
@@ -295,6 +381,69 @@ const authenticateToken = (req, res, next) => {
     });
 };
 
+app.post("/api/billing/initialize", authenticateToken, async (req, res) => {
+  try {
+    const { planCode } = req.body;
+    if (!planCode) return res.status(400).json({ error: "Plan code required" });
+
+    // Get current tenant details to pass to Paystack
+    const tenantId = req.user.tenant_id;
+    const [tenants] = await pool.query(
+      "SELECT email, name FROM tenants WHERE id = $1",
+      [tenantId],
+    );
+    if (tenants.length === 0)
+      return res.status(404).json({ error: "Tenant not found" });
+
+    const tenant = tenants[0];
+    const email = tenant.email || "admin@zitemart.local";
+
+    // Initialize transaction with Paystack
+    const paystackRes = await fetch(
+      "https://api.paystack.co/transaction/initialize",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          email: email,
+          plan: planCode,
+          callback_url: "https://zite.chowexpress.co/#/billing-callback",
+          metadata: {
+            tenant_id: tenantId,
+            custom_fields: [
+              {
+                display_name: "Business Name",
+                variable_name: "business_name",
+                value: tenant.name,
+              },
+            ],
+          },
+        }),
+      },
+    );
+
+    const data = await paystackRes.json();
+
+    if (!data.status) {
+      console.error("Paystack Init Error:", data);
+      return res
+        .status(400)
+        .json({ error: data.message || "Payment initialization failed" });
+    }
+
+    res.json({
+      authorization_url: data.data.authorization_url,
+      reference: data.data.reference,
+    });
+  } catch (error) {
+    console.error("Billing init error:", error);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 // Tenant context middleware — must run AFTER authenticateToken.
 // Acquires a dedicated client, begins a transaction, sets app.tenant_id
 // for the duration of this request, and attaches the client as req.db.
@@ -302,34 +451,91 @@ const authenticateToken = (req, res, next) => {
 // of pool.query(). On response finish/close, COMMIT (or ROLLBACK on error)
 // and release the client.
 const setTenantContext = async (req, res, next) => {
-    let client;
+  let client;
+  try {
+    // === SUBSCRIPTION GATE ===
+    // Check the tenant's subscription before opening the RLS transaction.
+    // Billing routes are exempt (so a tenant can pay).
+    if (!req.path.startsWith("/api/billing")) {
+      const [tenants] = await pool.query(
+        "SELECT status, subscription_status FROM tenants WHERE id = $1",
+        [req.user.tenant_id],
+      );
+      if (tenants.length === 0) {
+        return res.status(403).json({ error: "Tenant not found" });
+      }
+      const t = tenants[0];
+      if (t.status !== "active" || t.subscription_status !== "active") {
+        return res.status(402).json({
+          error: "Subscription required",
+          code: "SUBSCRIPTION_INACTIVE",
+          status: t.subscription_status || "none",
+        });
+      }
+    }
+
+    // === RLS TENANT CONTEXT ===
+    client = await _pgPool.connect();
+    await client.query("BEGIN");
+    await client.query("SELECT set_config('app.tenant_id', $1, true)", [
+      String(req.user.tenant_id),
+    ]);
+    req.db = {
+      query: async (sql, params) => {
+        const result = await client.query(_toPg(sql), params || []);
+        return [result.rows, result.fields];
+      },
+    };
+    let finished = false;
+    const cleanup = async (err) => {
+      if (finished) return;
+      finished = true;
+      try {
+        if (err) {
+          await client.query("ROLLBACK");
+        } else {
+          await client.query("COMMIT");
+        }
+      } catch (_) {
+        /* swallow */
+      }
+      client.release();
+    };
+    res.on("finish", () => cleanup(null));
+    res.on("close", () => cleanup(new Error("connection closed")));
+    next();
+  } catch (e) {
+    if (client) client.release();
+    console.error("setTenantContext error:", e.message);
+    res.status(500).json({ error: "Tenant context failure" });
+  }
+};
+
+// Subscription gate — must run AFTER authenticateToken and AFTER setTenantContext.
+// Loads the tenant's subscription status and blocks access if not active.
+const requireActiveSubscription = async (req, res, next) => {
     try {
-        client = await _pgPool.connect();
-        await client.query('BEGIN');
-        await client.query("SELECT set_config('app.tenant_id', $1, true)", [String(req.user.tenant_id)]);
-        req.db = {
-            query: async (sql, params) => {
-                const result = await client.query(_toPg(sql), params || []);
-                return [result.rows, result.fields];
-            },
-        };
-        let finished = false;
-        const cleanup = async (err) => {
-            if (finished) return;
-            finished = true;
-            try {
-                if (err) { await client.query('ROLLBACK'); }
-                else { await client.query('COMMIT'); }
-            } catch (_) { /* swallow */ }
-            client.release();
-        };
-        res.on('finish', () => cleanup(null));
-        res.on('close', () => cleanup(new Error('connection closed')));
+        const tenantId = req.user.tenant_id;
+        const [tenants] = await pool.query(
+            'SELECT status, subscription_status FROM tenants WHERE id = $1',
+            [tenantId]
+        );
+        if (tenants.length === 0) {
+            return res.status(403).json({ error: 'Tenant not found' });
+        }
+        const tenant = tenants[0];
+        // Allow access if subscription is active. Block otherwise.
+        if (tenant.subscription_status !== 'active') {
+            return res.status(402).json({
+                error: 'Subscription required',
+                code: 'SUBSCRIPTION_INACTIVE',
+                status: tenant.subscription_status || 'none'
+            });
+        }
         next();
-    } catch (e) {
-        if (client) client.release();
-        console.error('setTenantContext error:', e.message);
-        res.status(500).json({ error: 'Tenant context failure' });
+    } catch (error) {
+        console.error('Subscription gate error:', error);
+        res.status(500).json({ error: 'Server error' });
     }
 };
 
@@ -338,6 +544,7 @@ const setTenantContext = async (req, res, next) => {
 app.get('/api/test', authenticateToken, (req, res) => {
     res.json({ message: 'API is working!', user: req.user });
 });
+
 
 // ==================== PRODUCT ENDPOINTS ====================
 
