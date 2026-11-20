@@ -383,7 +383,7 @@ const authenticateToken = (req, res, next) => {
 
 app.post("/api/billing/initialize", authenticateToken, async (req, res) => {
   try {
-    const { planCode } = req.body;
+    const { planCode, amount } = req.body;
     if (!planCode && !amount)
       return res.status(400).json({ error: "Plan code or amount required" });
 
