@@ -1,59 +1,62 @@
-const express = require('express');
-const cors = require('cors');
-const { Pool } = require('pg');
-const path = require('path');
-const fs = require('fs');
-const jwt = require('jsonwebtoken');
-const bcrypt = require('bcryptjs');
+const express = require("express");
+const cors = require("cors");
+const { Pool } = require("pg");
+const path = require("path");
+const fs = require("fs");
+const jwt = require("jsonwebtoken");
+const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
-if (require('fs').existsSync('.env.pg')) {
-    require('dotenv').config({ path: '.env.pg', override: true });
+if (require("fs").existsSync(".env.pg")) {
+  require("dotenv").config({ path: ".env.pg", override: true });
 } else {
-    require('dotenv').config();
+  require("dotenv").config();
 }
 // Set timezone to West Africa Time (UTC+1)
-process.env.TZ = 'Africa/Lagos';
+process.env.TZ = "Africa/Lagos";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 // Add multer configuration at the top of your file (after other requires)
-const multer = require('multer');
+const multer = require("multer");
 
 // ==================== PAYSTACK WEBHOOK ====================
 // MUST be registered BEFORE express.json() so we can access the raw body
 // for HMAC signature verification. This route is self-contained.
 app.post(
-  '/api/billing/webhook',
-  express.raw({ type: 'application/json' }),
+  "/api/billing/webhook",
+  express.raw({ type: "application/json" }),
   async (req, res) => {
     try {
       const secret = process.env.PAYSTACK_SECRET_KEY;
       const hash = crypto
-        .createHmac('sha512', secret)
+        .createHmac("sha512", secret)
         .update(req.body)
-        .digest('hex');
+        .digest("hex");
 
-      if (hash !== req.headers['x-paystack-signature']) {
-        console.error('Webhook: Invalid signature');
+      if (hash !== req.headers["x-paystack-signature"]) {
+        console.error("Webhook: Invalid signature");
         return res.sendStatus(401);
       }
 
       const event = JSON.parse(req.body.toString());
       const { event: eventType, data } = event;
-      console.log('=== PAYSTACK WEBHOOK:', eventType, '===');
+      console.log("=== PAYSTACK WEBHOOK:", eventType, "===");
 
-      if (eventType === 'charge.success' || eventType === 'subscription.create') {
+      if (
+        eventType === "charge.success" ||
+        eventType === "subscription.create"
+      ) {
         const tenantId = data.metadata?.tenant_id;
         if (!tenantId) {
-          console.error('Webhook: No tenant_id in metadata');
+          console.error("Webhook: No tenant_id in metadata");
           return res.sendStatus(200);
         }
 
         const subscriptionCode = data.subscription_code || null;
         const customerCode = data.customer?.customer_code || null;
         const planCode = data.plan?.plan_code || null;
-        const nextPayment = data.subscription?.next_payment_date 
-          ? new Date(data.subscription.next_payment_date) 
+        const nextPayment = data.subscription?.next_payment_date
+          ? new Date(data.subscription.next_payment_date)
           : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
 
         await pool.query(
@@ -65,28 +68,42 @@ app.post(
                current_period_end = $4,
                status = 'active'
            WHERE id = $5`,
-          [customerCode, subscriptionCode, planCode, nextPayment, tenantId]
+          [customerCode, subscriptionCode, planCode, nextPayment, tenantId],
         );
         console.log(`Tenant ${tenantId} subscription activated.`);
       }
 
-      if (eventType === 'invoice.payment_failed' || eventType === 'subscription.not_renew') {
+      if (eventType === "invoice.payment_failed") {
         const tenantId = data.metadata?.tenant_id;
         if (tenantId) {
           await pool.query(
             `UPDATE tenants SET subscription_status = 'attention' WHERE id = $1`,
-            [tenantId]
+            [tenantId],
           );
-          console.log(`Tenant ${tenantId} subscription failed/attention.`);
+          console.log(`Tenant ${tenantId} payment failed — set to attention.`);
         }
       }
 
-      if (eventType === 'subscription.disable') {
+      if (eventType === "subscription.not_renew") {
+        // Customer cancelled, but still paid up until current_period_end
+        const customerCode = data.customer?.customer_code;
+        if (customerCode) {
+          await pool.query(
+            `UPDATE tenants SET subscription_status = 'non-renewing' WHERE paystack_customer_code = $1`,
+            [customerCode],
+          );
+          console.log(
+            `Subscription cancelled (non-renewing) for ${customerCode}.`,
+          );
+        }
+      }
+
+      if (eventType === "subscription.disable") {
         const customerCode = data.customer?.customer_code;
         if (customerCode) {
           await pool.query(
             `UPDATE tenants SET subscription_status = 'cancelled' WHERE paystack_customer_code = $1`,
-            [customerCode]
+            [customerCode],
           );
           console.log(`Subscription cancelled for customer ${customerCode}.`);
         }
@@ -94,10 +111,10 @@ app.post(
 
       res.sendStatus(200);
     } catch (error) {
-      console.error('Webhook error:', error);
+      console.error("Webhook error:", error);
       res.sendStatus(500);
     }
-  }
+  },
 );
 
 app.use(express.json());
@@ -105,50 +122,50 @@ app.use(express.json());
 // Middleware
 app.use(cors());
 app.use(express.json());
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 // Database connection
 // Database connection — credentials come from env only (.env.pg locally,
 // Render env vars in cloud). No hardcoded fallbacks for user/password.
 const _pgPool = new Pool({
-    host:     process.env.DB_HOST,
-    user:     process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    database: process.env.DB_NAME,
-    port:     process.env.DB_PORT ? parseInt(process.env.DB_PORT) : 5432,
-    ssl: { rejectUnauthorized: false },
-    max: 10,
-    idleTimeoutMillis: 30000,
-    connectionTimeoutMillis: 10000,
+  host: process.env.DB_HOST,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
+  port: process.env.DB_PORT ? parseInt(process.env.DB_PORT) : 5432,
+  ssl: { rejectUnauthorized: false },
+  max: 10,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 10000,
 });
 
 function _toPg(sql) {
-    let counter = 0;
-    return sql.replace(/\?/g, () => `$${++counter}`);
+  let counter = 0;
+  return sql.replace(/\?/g, () => `$${++counter}`);
 }
 
 const pool = {
-    query: async (sql, params) => {
-        const result = await _pgPool.query(_toPg(sql), params || []);
+  query: async (sql, params) => {
+    const result = await _pgPool.query(_toPg(sql), params || []);
+    return [result.rows, result.fields];
+  },
+  connect: async () => {
+    const client = await _pgPool.connect();
+    return {
+      query: async (sql, params) => {
+        const result = await client.query(_toPg(sql), params || []);
         return [result.rows, result.fields];
-    },
-    connect: async () => {
-        const client = await _pgPool.connect();
-        return {
-            query: async (sql, params) => {
-                const result = await client.query(_toPg(sql), params || []);
-                return [result.rows, result.fields];
-            },
-            beginTransaction: () => client.query('BEGIN'),
-            commit: () => client.query('COMMIT'),
-            rollback: () => client.query('ROLLBACK'),
-            release: () => client.release(),
-        };
-    },
+      },
+      beginTransaction: () => client.query("BEGIN"),
+      commit: () => client.query("COMMIT"),
+      rollback: () => client.query("ROLLBACK"),
+      release: () => client.release(),
+    };
+  },
 };
 
 // JWT Secret
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-this';
+const JWT_SECRET = process.env.JWT_SECRET || "your-secret-key-change-this";
 
 let requestCounter = 0;
 
@@ -242,8 +259,6 @@ app.post("/api/register", async (req, res) => {
     client.release();
   }
 });
-
-
 
 // ==================== AUTH ENDPOINTS ====================
 
@@ -360,25 +375,23 @@ app.post("/api/login", async (req, res) => {
 // ==================== AUTH MIDDLEWARE ====================
 
 const authenticateToken = (req, res, next) => {
-    const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1];
-    
-    if (!token) {
-        return res.status(401).json({ error: 'Access denied' });
-    }
+  const authHeader = req.headers["authorization"];
+  const token = authHeader && authHeader.split(" ")[1];
 
-    jwt.verify(token, JWT_SECRET, (err, user) => {
-        if (err) {
-        return res.status(403).json({ error: "Invalid token" });
-        }
-        if (!user || !user.tenant_id) {
-        return res
-            .status(403)
-            .json({ error: "Token missing tenant context" });
-        }
-        req.user = user;
-        next();
-    });
+  if (!token) {
+    return res.status(401).json({ error: "Access denied" });
+  }
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) {
+      return res.status(403).json({ error: "Invalid token" });
+    }
+    if (!user || !user.tenant_id) {
+      return res.status(403).json({ error: "Token missing tenant context" });
+    }
+    req.user = user;
+    next();
+  });
 };
 
 app.post("/api/billing/initialize", authenticateToken, async (req, res) => {
@@ -515,37 +528,36 @@ const setTenantContext = async (req, res, next) => {
 // Subscription gate — must run AFTER authenticateToken and AFTER setTenantContext.
 // Loads the tenant's subscription status and blocks access if not active.
 const requireActiveSubscription = async (req, res, next) => {
-    try {
-        const tenantId = req.user.tenant_id;
-        const [tenants] = await pool.query(
-            'SELECT status, subscription_status FROM tenants WHERE id = $1',
-            [tenantId]
-        );
-        if (tenants.length === 0) {
-            return res.status(403).json({ error: 'Tenant not found' });
-        }
-        const tenant = tenants[0];
-        // Allow access if subscription is active. Block otherwise.
-        if (tenant.subscription_status !== 'active') {
-            return res.status(402).json({
-                error: 'Subscription required',
-                code: 'SUBSCRIPTION_INACTIVE',
-                status: tenant.subscription_status || 'none'
-            });
-        }
-        next();
-    } catch (error) {
-        console.error('Subscription gate error:', error);
-        res.status(500).json({ error: 'Server error' });
+  try {
+    const tenantId = req.user.tenant_id;
+    const [tenants] = await pool.query(
+      "SELECT status, subscription_status FROM tenants WHERE id = $1",
+      [tenantId],
+    );
+    if (tenants.length === 0) {
+      return res.status(403).json({ error: "Tenant not found" });
     }
+    const tenant = tenants[0];
+    // Allow access if subscription is active. Block otherwise.
+    if (tenant.subscription_status !== "active") {
+      return res.status(402).json({
+        error: "Subscription required",
+        code: "SUBSCRIPTION_INACTIVE",
+        status: tenant.subscription_status || "none",
+      });
+    }
+    next();
+  } catch (error) {
+    console.error("Subscription gate error:", error);
+    res.status(500).json({ error: "Server error" });
+  }
 };
 
 // ==================== TEST ENDPOINT ====================
 
-app.get('/api/test', authenticateToken, (req, res) => {
-    res.json({ message: 'API is working!', user: req.user });
+app.get("/api/test", authenticateToken, (req, res) => {
+  res.json({ message: "API is working!", user: req.user });
 });
-
 
 // ==================== PRODUCT ENDPOINTS ====================
 
@@ -593,39 +605,40 @@ app.get(
   },
 );
 
-app.get('/api/products/next-sku', async (req, res) => {
+app.get("/api/products/next-sku", async (req, res) => {
   const { category_id, name } = req.query;
 
   if (!category_id || isNaN(parseInt(category_id))) {
-    return res.status(400).json({ error: 'Valid category_id is required' });
+    return res.status(400).json({ error: "Valid category_id is required" });
   }
   if (!name || name.trim().length === 0) {
-    return res.status(400).json({ error: 'Product name is required' });
+    return res.status(400).json({ error: "Product name is required" });
   }
 
   try {
     const [categoryRows] = await pool.query(
-      'SELECT name FROM categories WHERE id = ?',
-      [category_id]
+      "SELECT name FROM categories WHERE id = ?",
+      [category_id],
     );
 
     if (categoryRows.length === 0) {
-      return res.status(404).json({ error: 'Category not found' });
+      return res.status(404).json({ error: "Category not found" });
     }
 
-    const categoryName = categoryRows[0].name || '';
+    const categoryName = categoryRows[0].name || "";
     const categoryPrefix = categoryName
-      .replace(/[^a-zA-Z]/g, '')
+      .replace(/[^a-zA-Z]/g, "")
       .toUpperCase()
       .slice(0, 3);
 
-    const productInitials = name
-      .trim()
-      .split(/\s+/)
-      .map(w => w.replace(/[^a-zA-Z]/g, '').charAt(0))
-      .join('')
-      .toUpperCase()
-      .slice(0, 4) || 'X';
+    const productInitials =
+      name
+        .trim()
+        .split(/\s+/)
+        .map((w) => w.replace(/[^a-zA-Z]/g, "").charAt(0))
+        .join("")
+        .toUpperCase()
+        .slice(0, 4) || "X";
 
     const basePrefix = `${categoryPrefix}-${productInitials}-`;
 
@@ -633,19 +646,18 @@ app.get('/api/products/next-sku', async (req, res) => {
       `SELECT MAX(CAST(SUBSTRING(sku, LENGTH(?) + 1) AS INTEGER)) AS maxNum
        FROM products
        WHERE sku LIKE ? || '%'`,
-      [basePrefix, basePrefix]
+      [basePrefix, basePrefix],
     );
 
     const nextNum = (result[0].maxNum || 0) + 1;
-    const nextSku = `${basePrefix}${nextNum.toString().padStart(3, '0')}`;
+    const nextSku = `${basePrefix}${nextNum.toString().padStart(3, "0")}`;
 
     res.json({ nextSku });
   } catch (error) {
-    console.error('Error generating next SKU:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    console.error("Error generating next SKU:", error);
+    res.status(500).json({ error: "Internal server error" });
   }
 });
-
 
 app.get(
   "/api/products/:id",
@@ -697,7 +709,6 @@ app.get(
     }
   },
 );
-
 
 app.post(
   "/api/products",
@@ -1166,7 +1177,6 @@ app.get(
   },
 );
 
-
 // ==================== SALES ENDPOINTS ====================
 
 app.post(
@@ -1420,7 +1430,6 @@ app.post(
   },
 );
 
-
 app.get(
   "/api/sales/:id",
   authenticateToken,
@@ -1592,134 +1601,140 @@ app.put(
 // ==================== DISCOUNT PIN ENDPOINTS ====================
 
 // Generate a batch of discount PINs
-app.post('/api/discount-pins/generate', authenticateToken, async (req, res) => {
-    if (req.user.role !== 'admin' && req.user.role !== 'manager') {
-        return res.status(403).json({ error: 'Access denied' });
+app.post("/api/discount-pins/generate", authenticateToken, async (req, res) => {
+  if (req.user.role !== "admin" && req.user.role !== "manager") {
+    return res.status(403).json({ error: "Access denied" });
+  }
+
+  try {
+    const { count, maxDiscountType, maxDiscountValue, notes } = req.body;
+
+    const numPins = parseInt(count) || 1;
+    if (numPins < 1 || numPins > 100) {
+      return res.status(400).json({ error: "Count must be between 1 and 100" });
+    }
+    if (maxDiscountType !== "percent" && maxDiscountType !== "amount") {
+      return res.status(400).json({ error: "Invalid discount type" });
+    }
+    const maxValue = parseFloat(maxDiscountValue);
+    if (!maxValue || maxValue <= 0) {
+      return res
+        .status(400)
+        .json({ error: "Max discount value must be positive" });
+    }
+    if (maxDiscountType === "percent" && maxValue > 100) {
+      return res
+        .status(400)
+        .json({ error: "Percent discount cannot exceed 100" });
     }
 
-    try {
-        const { count, maxDiscountType, maxDiscountValue, notes } = req.body;
+    const generated = [];
+    for (let i = 0; i < numPins; i++) {
+      let pin;
+      let attempts = 0;
+      // Retry in case of collision
+      do {
+        pin = Math.floor(100000 + Math.random() * 900000).toString();
+        const [existing] = await pool.query(
+          "SELECT id FROM discount_pins WHERE pin = ?",
+          [pin],
+        );
+        if (existing.length === 0) break;
+        attempts++;
+      } while (attempts < 10);
 
-        const numPins = parseInt(count) || 1;
-        if (numPins < 1 || numPins > 100) {
-            return res.status(400).json({ error: 'Count must be between 1 and 100' });
-        }
-        if (maxDiscountType !== 'percent' && maxDiscountType !== 'amount') {
-            return res.status(400).json({ error: 'Invalid discount type' });
-        }
-        const maxValue = parseFloat(maxDiscountValue);
-        if (!maxValue || maxValue <= 0) {
-            return res.status(400).json({ error: 'Max discount value must be positive' });
-        }
-        if (maxDiscountType === 'percent' && maxValue > 100) {
-            return res.status(400).json({ error: 'Percent discount cannot exceed 100' });
-        }
+      if (attempts >= 10) {
+        return res
+          .status(500)
+          .json({ error: "Could not generate unique PINs" });
+      }
 
-        const generated = [];
-        for (let i = 0; i < numPins; i++) {
-            let pin;
-            let attempts = 0;
-            // Retry in case of collision
-            do {
-                pin = Math.floor(100000 + Math.random() * 900000).toString();
-                const [existing] = await pool.query(
-                    'SELECT id FROM discount_pins WHERE pin = ?',
-                    [pin]
-                );
-                if (existing.length === 0) break;
-                attempts++;
-            } while (attempts < 10);
-
-            if (attempts >= 10) {
-                return res.status(500).json({ error: 'Could not generate unique PINs' });
-            }
-
-            const [result] = await pool.query(
-                `INSERT INTO discount_pins 
+      const [result] = await pool.query(
+        `INSERT INTO discount_pins 
                  (pin, max_discount_type, max_discount_value, notes, created_by) 
                  VALUES (?, ?, ?, ?, ?) RETURNING id`,
-                [pin, maxDiscountType, maxValue, notes || null, req.user.id]
-            );
+        [pin, maxDiscountType, maxValue, notes || null, req.user.id],
+      );
 
-            generated.push({
-                id: result[0].id,
-                pin,
-                max_discount_type: maxDiscountType,
-                max_discount_value: maxValue,
-                notes: notes || null
-            });
-        }
-
-        res.json({ pins: generated, count: generated.length });
-    } catch (error) {
-        console.error('Error generating discount PINs:', error);
-        res.status(500).json({ error: 'Server error' });
+      generated.push({
+        id: result[0].id,
+        pin,
+        max_discount_type: maxDiscountType,
+        max_discount_value: maxValue,
+        notes: notes || null,
+      });
     }
+
+    res.json({ pins: generated, count: generated.length });
+  } catch (error) {
+    console.error("Error generating discount PINs:", error);
+    res.status(500).json({ error: "Server error" });
+  }
 });
 
 // Validate a discount PIN
-app.post('/api/discount-pins/validate', authenticateToken, async (req, res) => {
-    try {
-        const { pin, discountType, discountValue } = req.body;
+app.post("/api/discount-pins/validate", authenticateToken, async (req, res) => {
+  try {
+    const { pin, discountType, discountValue } = req.body;
 
-        if (!pin) {
-            return res.status(400).json({ error: 'PIN is required' });
-        }
-
-        const [rows] = await pool.query(
-            'SELECT * FROM discount_pins WHERE pin = ?',
-            [pin]
-        );
-
-        if (rows.length === 0) {
-            return res.status(404).json({ error: 'Invalid PIN' });
-        }
-
-        const pinRow = rows[0];
-
-        if (pinRow.used_at) {
-            return res.status(400).json({ error: 'PIN already used' });
-        }
-
-        // Validate discount against PIN's max
-        const requestedValue = parseFloat(discountValue);
-        if (!requestedValue || requestedValue <= 0) {
-            return res.status(400).json({ error: 'Invalid discount value' });
-        }
-
-        if (discountType !== pinRow.max_discount_type) {
-            return res.status(400).json({ 
-                error: `PIN allows ${pinRow.max_discount_type} discount only` 
-            });
-        }
-
-        const maxValue = parseFloat(pinRow.max_discount_value);
-        if (requestedValue > maxValue) {
-            return res.status(400).json({ 
-                error: `Discount exceeds PIN limit of ${maxValue}${discountType === 'percent' ? '%' : ''}` 
-            });
-        }
-
-        res.json({
-            valid: true,
-            pin_id: pinRow.id,
-            max_discount_type: pinRow.max_discount_type,
-            max_discount_value: maxValue
-        });
-    } catch (error) {
-        console.error('Error validating discount PIN:', error);
-        res.status(500).json({ error: 'Server error' });
+    if (!pin) {
+      return res.status(400).json({ error: "PIN is required" });
     }
+
+    const [rows] = await pool.query(
+      "SELECT * FROM discount_pins WHERE pin = ?",
+      [pin],
+    );
+
+    if (rows.length === 0) {
+      return res.status(404).json({ error: "Invalid PIN" });
+    }
+
+    const pinRow = rows[0];
+
+    if (pinRow.used_at) {
+      return res.status(400).json({ error: "PIN already used" });
+    }
+
+    // Validate discount against PIN's max
+    const requestedValue = parseFloat(discountValue);
+    if (!requestedValue || requestedValue <= 0) {
+      return res.status(400).json({ error: "Invalid discount value" });
+    }
+
+    if (discountType !== pinRow.max_discount_type) {
+      return res.status(400).json({
+        error: `PIN allows ${pinRow.max_discount_type} discount only`,
+      });
+    }
+
+    const maxValue = parseFloat(pinRow.max_discount_value);
+    if (requestedValue > maxValue) {
+      return res.status(400).json({
+        error: `Discount exceeds PIN limit of ${maxValue}${discountType === "percent" ? "%" : ""}`,
+      });
+    }
+
+    res.json({
+      valid: true,
+      pin_id: pinRow.id,
+      max_discount_type: pinRow.max_discount_type,
+      max_discount_value: maxValue,
+    });
+  } catch (error) {
+    console.error("Error validating discount PIN:", error);
+    res.status(500).json({ error: "Server error" });
+  }
 });
 
-app.get('/api/discount-pins', authenticateToken, async (req, res) => {
-    if (req.user.role !== 'admin' && req.user.role !== 'manager') {
-        return res.status(403).json({ error: 'Access denied' });
-    }
+app.get("/api/discount-pins", authenticateToken, async (req, res) => {
+  if (req.user.role !== "admin" && req.user.role !== "manager") {
+    return res.status(403).json({ error: "Access denied" });
+  }
 
-    try {
-        const { status, start, end } = req.query;
-        let query = `
+  try {
+    const { status, start, end } = req.query;
+    let query = `
             SELECT 
                 dp.*,
                 creator.username AS created_by_username,
@@ -1733,27 +1748,27 @@ app.get('/api/discount-pins', authenticateToken, async (req, res) => {
             LEFT JOIN sales s ON dp.sale_id = s.id
             WHERE 1=1
         `;
-        let params = [];
+    let params = [];
 
-        if (status === 'used') {
-            query += ' AND dp.used_at IS NOT NULL';
-        } else if (status === 'unused') {
-            query += ' AND dp.used_at IS NULL';
-        }
-
-        if (start && end) {
-            query += ' AND dp.created_at BETWEEN ? AND ?';
-            params.push(start, end);
-        }
-
-        query += ' ORDER BY dp.created_at DESC';
-
-        const [pins] = await pool.query(query, params);
-        res.json(pins);
-    } catch (error) {
-        console.error('Error fetching discount PINs:', error);
-        res.status(500).json({ error: 'Server error' });
+    if (status === "used") {
+      query += " AND dp.used_at IS NOT NULL";
+    } else if (status === "unused") {
+      query += " AND dp.used_at IS NULL";
     }
+
+    if (start && end) {
+      query += " AND dp.created_at BETWEEN ? AND ?";
+      params.push(start, end);
+    }
+
+    query += " ORDER BY dp.created_at DESC";
+
+    const [pins] = await pool.query(query, params);
+    res.json(pins);
+  } catch (error) {
+    console.error("Error fetching discount PINs:", error);
+    res.status(500).json({ error: "Server error" });
+  }
 });
 
 // ==================== USERS ENDPOINTS ====================
@@ -1771,7 +1786,6 @@ app.get("/api/users", authenticateToken, setTenantContext, async (req, res) => {
     res.status(500).json({ error: "Server error" });
   }
 });
-
 
 app.get(
   "/api/users/:id",
@@ -2118,85 +2132,89 @@ app.delete(
 
 // ==================== STATES ENDPOINTS ====================
 
-app.get('/api/states', authenticateToken, async (req, res) => {
-    try {
-        const [states] = await pool.query('SELECT * FROM states WHERE is_active = 1 ORDER BY name');
-        res.json(states);
-    } catch (error) {
-        console.error('Error fetching states:', error);
-        res.status(500).json({ error: 'Server error' });
-    }
+app.get("/api/states", authenticateToken, async (req, res) => {
+  try {
+    const [states] = await pool.query(
+      "SELECT * FROM states WHERE is_active = 1 ORDER BY name",
+    );
+    res.json(states);
+  } catch (error) {
+    console.error("Error fetching states:", error);
+    res.status(500).json({ error: "Server error" });
+  }
 });
 
-app.get('/api/states/:id', authenticateToken, async (req, res) => {
-    try {
-        const [states] = await pool.query('SELECT * FROM states WHERE id = ?', [req.params.id]);
-        if (states.length === 0) return res.status(404).json({ error: 'State not found' });
-        res.json(states[0]);
-    } catch (error) {
-        console.error('Error fetching state:', error);
-        res.status(500).json({ error: 'Server error' });
-    }
+app.get("/api/states/:id", authenticateToken, async (req, res) => {
+  try {
+    const [states] = await pool.query("SELECT * FROM states WHERE id = ?", [
+      req.params.id,
+    ]);
+    if (states.length === 0)
+      return res.status(404).json({ error: "State not found" });
+    res.json(states[0]);
+  } catch (error) {
+    console.error("Error fetching state:", error);
+    res.status(500).json({ error: "Server error" });
+  }
 });
 
 // ==================== COMPANY ENDPOINTS ====================
 
-
 // Configure multer for logo upload
 const storage = multer.diskStorage({
-    destination: function (req, file, cb) {
-        const uploadDir = 'uploads/logos';
-        if (!fs.existsSync(uploadDir)) {
-            fs.mkdirSync(uploadDir, { recursive: true });
-        }
-        cb(null, uploadDir);
-    },
-    filename: function (req, file, cb) {
-        const ext = path.extname(file.originalname);
-        const filename = `company_logo_${Date.now()}${ext}`;
-        cb(null, filename);
+  destination: function (req, file, cb) {
+    const uploadDir = "uploads/logos";
+    if (!fs.existsSync(uploadDir)) {
+      fs.mkdirSync(uploadDir, { recursive: true });
     }
+    cb(null, uploadDir);
+  },
+  filename: function (req, file, cb) {
+    const ext = path.extname(file.originalname);
+    const filename = `company_logo_${Date.now()}${ext}`;
+    cb(null, filename);
+  },
 });
 
 const upload = multer({
-    storage: storage,
-    limits: { fileSize: 2 * 1024 * 1024 }, // 2MB limit
-    fileFilter: function (req, file, cb) {
-        console.log('=== FILE UPLOAD DEBUG ===');
-        console.log('Original filename:', file.originalname);
-        console.log('Mimetype:', file.mimetype);
-        console.log('Extension:', path.extname(file.originalname).toLowerCase());
-        
-        // Check if extension is valid
-        const allowedExtensions = /\.(jpeg|jpg|png|gif|bmp|webp)$/i;
-        const extValid = allowedExtensions.test(file.originalname);
-        
-        // Check if mimetype is valid (or is octet-stream which might be an image)
-        const allowedMimetypes = /image\/(jpeg|jpg|png|gif|bmp|webp)/i;
-        const mimeValid = allowedMimetypes.test(file.mimetype);
-        
-        // Accept if EITHER extension OR mimetype is valid
-        // Also accept application/octet-stream if it has a valid image extension
-        const isValid = extValid || mimeValid;
-        
-        console.log('Extension valid?', extValid);
-        console.log('Mimetype valid?', mimeValid);
-        console.log('✅ Accepted?', isValid);
-        
-        if (isValid) {
-            console.log('✅ File accepted');
-            return cb(null, true);
-        }
-        console.log('❌ File rejected');
-        cb(new Error('Only image files are allowed (jpeg, jpg, png, gif)'));
+  storage: storage,
+  limits: { fileSize: 2 * 1024 * 1024 }, // 2MB limit
+  fileFilter: function (req, file, cb) {
+    console.log("=== FILE UPLOAD DEBUG ===");
+    console.log("Original filename:", file.originalname);
+    console.log("Mimetype:", file.mimetype);
+    console.log("Extension:", path.extname(file.originalname).toLowerCase());
+
+    // Check if extension is valid
+    const allowedExtensions = /\.(jpeg|jpg|png|gif|bmp|webp)$/i;
+    const extValid = allowedExtensions.test(file.originalname);
+
+    // Check if mimetype is valid (or is octet-stream which might be an image)
+    const allowedMimetypes = /image\/(jpeg|jpg|png|gif|bmp|webp)/i;
+    const mimeValid = allowedMimetypes.test(file.mimetype);
+
+    // Accept if EITHER extension OR mimetype is valid
+    // Also accept application/octet-stream if it has a valid image extension
+    const isValid = extValid || mimeValid;
+
+    console.log("Extension valid?", extValid);
+    console.log("Mimetype valid?", mimeValid);
+    console.log("✅ Accepted?", isValid);
+
+    if (isValid) {
+      console.log("✅ File accepted");
+      return cb(null, true);
     }
+    console.log("❌ File rejected");
+    cb(new Error("Only image files are allowed (jpeg, jpg, png, gif)"));
+  },
 });
 
 // Create uploads directory if it doesn't exist
-const uploadDir = 'uploads/logos';
+const uploadDir = "uploads/logos";
 if (!fs.existsSync(uploadDir)) {
-    fs.mkdirSync(uploadDir, { recursive: true });
-    console.log('Created uploads directory');
+  fs.mkdirSync(uploadDir, { recursive: true });
+  console.log("Created uploads directory");
 }
 
 // GET company
@@ -2453,7 +2471,6 @@ app.put(
     }
   },
 );
-
 
 // ==================== EXPENSES ENDPOINTS ====================
 
@@ -3181,10 +3198,10 @@ app.patch(
         [req.params.id],
       );
 
-        await req.db.query(
-            `UPDATE notifications SET is_read = 1 WHERE reference_id = ? AND type IN ('credit_approved', 'credit_rejected')`,
-            [creditSale[0].sale_id],
-        );
+      await req.db.query(
+        `UPDATE notifications SET is_read = 1 WHERE reference_id = ? AND type IN ('credit_approved', 'credit_rejected')`,
+        [creditSale[0].sale_id],
+      );
 
       res.json({ message: "Credit sale completed. Stock deducted." });
     } catch (error) {
@@ -3193,7 +3210,6 @@ app.patch(
     }
   },
 );
-
 
 // ==================== CUSTOMERS ENDPOINTS ====================
 
@@ -4499,7 +4515,6 @@ app.patch(
   },
 );
 
-
 // ==================== CREDIT PAYMENTS ENDPOINT ====================
 
 app.post(
@@ -5468,11 +5483,10 @@ app.get(
   },
 );
 
-
 // ==================== START SERVER ====================
 
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Server running on http://localhost:${PORT}`);
-    console.log(`   Test API: http://localhost:${PORT}/api/test (needs token)`);
-    console.log(`   Login: http://localhost:${PORT}/api/login`);
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`🚀 Server running on http://localhost:${PORT}`);
+  console.log(`   Test API: http://localhost:${PORT}/api/test (needs token)`);
+  console.log(`   Login: http://localhost:${PORT}/api/login`);
 });
