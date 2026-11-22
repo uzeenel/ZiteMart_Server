@@ -419,6 +419,19 @@ const authenticateToken = (req, res, next) => {
   });
 };
 
+// Get all active plans (public endpoint, no auth needed)
+app.get('/api/billing/plans', async (req, res) => {
+    try {
+        const [plans] = await pool.query(
+            'SELECT id, name, description, amount, interval, features FROM plans WHERE is_active = true ORDER BY amount ASC'
+        );
+        res.json(plans);
+    } catch (error) {
+        console.error('Error fetching plans:', error);
+        res.status(500).json({ error: 'Server error' });
+    }
+});
+
 app.post("/api/billing/initialize", authenticateToken, async (req, res) => {
   try {
     const { planCode, amount } = req.body;
