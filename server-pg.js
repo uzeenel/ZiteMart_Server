@@ -243,14 +243,39 @@ app.post("/api/register", async (req, res) => {
 
     // 5. Hash password and create the admin user
     const hashedPassword = await bcrypt.hash(password, 10);
-    await client.query(
+    const userResult = await client.query(
       `INSERT INTO users (username, password, full_name, role, role_id, is_active, tenant_id) 
-             VALUES ($1, $2, $3, 'admin', $4, 1, $5)`,
+             VALUES ($1, $2, $3, 'admin', $4, 1, $5) 
+       RETURNING id, username, full_name, role, tenant_id`,
       [username, hashedPassword, fullName || username, roleId, tenantId],
     );
+    const newUser = userResult.rows[0];
 
     await client.query("COMMIT");
-    res.json({ message: "Registration successful", tenant_slug: slug });
+
+    const token = jwt.sign(
+      {
+        id: newUser.id,
+        username: newUser.username,
+        role: newUser.role,
+        tenant_id: newUser.tenant_id,
+      },
+      JWT_SECRET,
+      { expiresIn: "8h" },
+    );
+
+    res.json({
+      message: "Registration successful",
+      tenant_slug: slug,
+      token,
+      user: {
+        id: newUser.id,
+        username: newUser.username,
+        fullName: newUser.full_name,
+        role: newUser.role,
+        tenant_id: newUser.tenant_id,
+      },
+    });
   } catch (error) {
     await client.query("ROLLBACK");
     console.error("Registration error:", error);
