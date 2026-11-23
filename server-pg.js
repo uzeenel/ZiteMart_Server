@@ -423,7 +423,7 @@ const authenticateToken = (req, res, next) => {
 app.get('/api/billing/plans', async (req, res) => {
     try {
         const [plans] = await pool.query(
-            'SELECT id, name, description, amount, interval, features FROM plans WHERE is_active = true ORDER BY amount ASC'
+          "SELECT id, name, description, amount, interval, features, paystack_plan_code FROM plans WHERE is_active = true ORDER BY amount ASC",
         );
         res.json(plans);
     } catch (error) {
