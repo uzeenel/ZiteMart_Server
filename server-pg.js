@@ -42,15 +42,45 @@ app.post(
       const { event: eventType, data } = event;
       console.log("=== PAYSTACK WEBHOOK:", eventType, "===");
 
-      if (
-        eventType === "charge.success" ||
-        eventType === "subscription.create"
-      ) {
-        const tenantId = data.metadata?.tenant_id;
+      if (eventType === 'charge.success' || eventType === 'subscription.create') {
+        let tenantId = data.metadata?.tenant_id;
+        const customerCode = data.customer?.customer_code || null;
+
+        // Fallback: If metadata is missing (common on recurring charges), find the tenant by customer code
+        if (!tenantId && customerCode) {
+          const [tenants] = await pool.query(
+            "SELECT id FROM tenants WHERE paystack_customer_code = $1",
+            [customerCode]
+          );
+          if (tenants.length > 0) {
+            tenantId = tenants[0].id;
+          }
+        }
+
         if (!tenantId) {
-          console.error("Webhook: No tenant_id in metadata");
+          console.error('Webhook: Could not determine tenant for customer', customerCode);
           return res.sendStatus(200);
         }
+
+        const subscriptionCode = data.subscription_code || null;
+        const planCode = data.plan?.plan_code || null;
+        const nextPayment = data.subscription?.next_payment_date 
+          ? new Date(data.subscription.next_payment_date) 
+          : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+
+        await pool.query(
+          `UPDATE tenants 
+           SET subscription_status = 'active',
+               paystack_customer_code = COALESCE($1, paystack_customer_code),
+               paystack_subscription_code = COALESCE($2, paystack_subscription_code),
+               paystack_plan_code = COALESCE($3, paystack_plan_code),
+               current_period_end = $4,
+               status = 'active'
+           WHERE id = $5`,
+          [customerCode, subscriptionCode, planCode, nextPayment, tenantId]
+        );
+        console.log(`Tenant ${tenantId} subscription activated.`);
+      }
 
         const subscriptionCode = data.subscription_code || null;
         const customerCode = data.customer?.customer_code || null;
