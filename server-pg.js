@@ -450,6 +450,25 @@ app.post("/api/billing/initialize", authenticateToken, async (req, res) => {
     const tenant = tenants[0];
     const email = tenant.email || "admin@zitemart.local";
 
+    // Determine the amount to charge
+    let chargeAmount = amount;
+
+    if (planCode) {
+      // Look up the plan to get its amount (Paystack requires amount even with plan)
+      const [planRows] = await pool.query(
+        "SELECT amount FROM plans WHERE paystack_plan_code = $1",
+        [planCode],
+      );
+      if (planRows.length === 0) {
+        return res.status(400).json({ error: "Invalid plan code" });
+      }
+      chargeAmount = planRows[0].amount;
+    }
+
+    if (!chargeAmount) {
+      return res.status(400).json({ error: "Could not determine plan amount" });
+    }
+
     // Initialize transaction with Paystack
     const paystackRes = await fetch(
       "https://api.paystack.co/transaction/initialize",
@@ -461,7 +480,8 @@ app.post("/api/billing/initialize", authenticateToken, async (req, res) => {
         },
         body: JSON.stringify({
           email: email,
-          ...(planCode ? { plan: planCode } : { amount: amount }), // Use plan OR amount
+          amount: chargeAmount,
+          ...(planCode ? { plan: planCode } : {}),
           callback_url: "https://zite.chowexpress.co/#/billing-callback",
           metadata: {
             tenant_id: tenantId,
