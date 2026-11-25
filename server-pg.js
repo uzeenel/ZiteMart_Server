@@ -42,7 +42,10 @@ app.post(
       const { event: eventType, data } = event;
       console.log("=== PAYSTACK WEBHOOK:", eventType, "===");
 
-      if (eventType === 'charge.success' || eventType === 'subscription.create') {
+      if (
+        eventType === "charge.success" ||
+        eventType === "subscription.create"
+      ) {
         let tenantId = data.metadata?.tenant_id;
         const customerCode = data.customer?.customer_code || null;
 
@@ -50,7 +53,7 @@ app.post(
         if (!tenantId && customerCode) {
           const [tenants] = await pool.query(
             "SELECT id FROM tenants WHERE paystack_customer_code = $1",
-            [customerCode]
+            [customerCode],
           );
           if (tenants.length > 0) {
             tenantId = tenants[0].id;
@@ -58,32 +61,14 @@ app.post(
         }
 
         if (!tenantId) {
-          console.error('Webhook: Could not determine tenant for customer', customerCode);
+          console.error(
+            "Webhook: Could not determine tenant for customer",
+            customerCode,
+          );
           return res.sendStatus(200);
         }
 
         const subscriptionCode = data.subscription_code || null;
-        const planCode = data.plan?.plan_code || null;
-        const nextPayment = data.subscription?.next_payment_date 
-          ? new Date(data.subscription.next_payment_date) 
-          : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-
-        await pool.query(
-          `UPDATE tenants 
-           SET subscription_status = 'active',
-               paystack_customer_code = COALESCE($1, paystack_customer_code),
-               paystack_subscription_code = COALESCE($2, paystack_subscription_code),
-               paystack_plan_code = COALESCE($3, paystack_plan_code),
-               current_period_end = $4,
-               status = 'active'
-           WHERE id = $5`,
-          [customerCode, subscriptionCode, planCode, nextPayment, tenantId]
-        );
-        console.log(`Tenant ${tenantId} subscription activated.`);
-      }
-
-        const subscriptionCode = data.subscription_code || null;
-        const customerCode = data.customer?.customer_code || null;
         const planCode = data.plan?.plan_code || null;
         const nextPayment = data.subscription?.next_payment_date
           ? new Date(data.subscription.next_payment_date)
@@ -100,7 +85,6 @@ app.post(
            WHERE id = $5`,
           [customerCode, subscriptionCode, planCode, nextPayment, tenantId],
         );
-        console.log(`Tenant ${tenantId} subscription activated.`);
       }
 
       if (eventType === "invoice.payment_failed") {
@@ -229,11 +213,12 @@ app.post("/api/register", async (req, res) => {
       return res.status(400).json({ error: "Business code is already taken" });
     }
 
-    // 2. Create the tenant
+    // 2. Create the tenant with a 30-day free trial
+    const trialEnd = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000); // 30 days from now
     const tenantResult = await client.query(
-      `INSERT INTO tenants (slug, name, email, status) 
-             VALUES ($1, $2, $3, 'active') RETURNING id`,
-      [slug, businessName, email || ""],
+      `INSERT INTO tenants (slug, name, email, status, subscription_status, current_period_end) 
+             VALUES ($1, $2, $3, 'active', 'non-renewing', $4) RETURNING id`,
+      [slug, businessName, email || "", trialEnd],
     );
     const tenantId = tenantResult.rows[0].id;
 
@@ -450,16 +435,16 @@ const authenticateToken = (req, res, next) => {
 };
 
 // Get all active plans (public endpoint, no auth needed)
-app.get('/api/billing/plans', async (req, res) => {
-    try {
-        const [plans] = await pool.query(
-          "SELECT id, name, description, amount, interval, features, paystack_plan_code FROM plans WHERE is_active = true ORDER BY amount ASC",
-        );
-        res.json(plans);
-    } catch (error) {
-        console.error('Error fetching plans:', error);
-        res.status(500).json({ error: 'Server error' });
-    }
+app.get("/api/billing/plans", async (req, res) => {
+  try {
+    const [plans] = await pool.query(
+      "SELECT id, name, description, amount, interval, features, paystack_plan_code FROM plans WHERE is_active = true ORDER BY amount ASC",
+    );
+    res.json(plans);
+  } catch (error) {
+    console.error("Error fetching plans:", error);
+    res.status(500).json({ error: "Server error" });
+  }
 });
 
 app.post("/api/billing/initialize", authenticateToken, async (req, res) => {
