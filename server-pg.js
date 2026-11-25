@@ -545,14 +545,20 @@ const setTenantContext = async (req, res, next) => {
     // Billing routes are exempt (so a tenant can pay).
     if (!req.path.startsWith("/api/billing")) {
       const [tenants] = await pool.query(
-        "SELECT status, subscription_status FROM tenants WHERE id = $1",
+        `SELECT status, subscription_status,
+                (current_period_end IS NOT NULL AND current_period_end > NOW()) AS in_period
+           FROM tenants WHERE id = $1`,
         [req.user.tenant_id],
       );
       if (tenants.length === 0) {
         return res.status(403).json({ error: "Tenant not found" });
       }
       const t = tenants[0];
-      if (t.status !== "active" || t.subscription_status !== "active") {
+      // Active subscription, OR a still-paid-up trial / non-renewing period.
+      const subscriptionUsable =
+        t.subscription_status === "active" ||
+        (t.subscription_status === "non-renewing" && t.in_period === true);
+      if (t.status !== "active" || !subscriptionUsable) {
         return res.status(402).json({
           error: "Subscription required",
           code: "SUBSCRIPTION_INACTIVE",
@@ -603,22 +609,30 @@ const setTenantContext = async (req, res, next) => {
 const requireActiveSubscription = async (req, res, next) => {
   try {
     const tenantId = req.user.tenant_id;
-    const [tenants] = await pool.query(
-      "SELECT status, subscription_status FROM tenants WHERE id = $1",
-      [tenantId],
-    );
-    if (tenants.length === 0) {
-      return res.status(403).json({ error: "Tenant not found" });
-    }
-    const tenant = tenants[0];
-    // Allow access if subscription is active. Block otherwise.
-    if (tenant.subscription_status !== "active") {
-      return res.status(402).json({
-        error: "Subscription required",
-        code: "SUBSCRIPTION_INACTIVE",
-        status: tenant.subscription_status || "none",
-      });
-    }
+        const [tenants] = await pool.query(
+          `SELECT status, subscription_status,
+              (current_period_end IS NOT NULL AND current_period_end > NOW()) AS in_period
+         FROM tenants WHERE id = $1`,
+          [tenantId],
+        );
+        if (tenants.length === 0) {
+          return res.status(403).json({ error: "Tenant not found" });
+        }
+        const tenant = tenants[0];
+        // Allow access while active, OR within the paid-up trial / non-renewing period.
+        const subscriptionUsable =
+          tenant.subscription_status === "active" ||
+          (tenant.subscription_status === "non-renewing" &&
+            tenant.in_period === true);
+        if (!subscriptionUsable) {
+          return res.status(402).json({
+            error: "Subscription required",
+            code: "SUBSCRIPTION_INACTIVE",
+            status: tenant.subscription_status || "none",
+          });
+        }
+        next();
+
     next();
   } catch (error) {
     console.error("Subscription gate error:", error);
