@@ -447,6 +447,26 @@ app.get("/api/billing/plans", async (req, res) => {
   }
 });
 
+app.get("/api/billing/status", authenticateToken, async (req, res) => {
+  try {
+    const [tenants] = await pool.query(
+      "SELECT subscription_status, current_period_end, status FROM tenants WHERE id = $1",
+      [req.user.tenant_id],
+    );
+    if (tenants.length === 0) {
+      return res.status(404).json({ error: "Tenant not found" });
+    }
+    res.json({
+      subscription_status: tenants[0].subscription_status,
+      current_period_end: tenants[0].current_period_end,
+      status: tenants[0].status,
+    });
+  } catch (error) {
+    console.error("Error fetching billing status:", error);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 app.post("/api/billing/initialize", authenticateToken, async (req, res) => {
   try {
     const { planCode, amount } = req.body;
