@@ -390,6 +390,11 @@ app.post("/api/login", async (req, res) => {
         { expiresIn: "8h" },
       );
 
+      const [tenantRows] = await pool.query(
+        "SELECT name FROM tenants WHERE id = $1",
+        [user.tenant_id]
+      );
+      const tenantName = tenantRows.length > 0 ? tenantRows[0].name : user.username;
       res.json({
         token,
         user: {
@@ -398,6 +403,7 @@ app.post("/api/login", async (req, res) => {
           fullName: user.full_name,
           role: user.role,
           tenant_id: user.tenant_id,
+          tenant_name: tenantName,
         },
       });
     } catch (err) {
