@@ -11,6 +11,40 @@ if (require("fs").existsSync(".env.pg")) {
 } else {
   require("dotenv").config();
 }
+
+// ==================== TERMII EMAIL HELPER ====================
+async function sendTermiiEmail({ to, subject, html }) {
+    try {
+        const response = await fetch(
+            `${process.env.TERMII_BASE_URL}/email/send`,
+            {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    api_key: process.env.TERMII_API_KEY,
+                    to: to,
+                    from: process.env.FROM_EMAIL,
+                    subject: subject,
+                    html: html,
+                }),
+            }
+        );
+
+        const data = await response.json();
+
+        if (!response.ok) {
+            console.error('Termii email error:', data);
+            return { success: false, error: data.message || 'Termii request failed' };
+        }
+
+        return { success: true, data };
+    } catch (error) {
+        console.error('Termii email exception:', error);
+        return { success: false, error: error.message };
+    }
+}
 // Set timezone to West Africa Time (UTC+1)
 process.env.TZ = "Africa/Lagos";
 
